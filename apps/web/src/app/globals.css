@@ -1,0 +1,231 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── O'Boyle Acquisition OS Design System ─────────────────────────────────
+   Early-2000s underground speedway / industrial machinery / old-money CRE /
+   black-and-white editorial. Black and warm white are the foundation;
+   green, silver, brass, and red are controlled accents only.
+
+   Palette reference (source hex → HSL below):
+     Deep black         #080A09    Soft black          #111411
+     Warm white         #F4F0E6    Aged ivory          #D9D1C0
+     Dark diesel green  #163629    Muted machinery grn #355845
+     Brushed silver     #A7AAA5    Antique brass       #9D8153
+     Speedway red       #8A2721 (very limited use)                        */
+@layer base {
+  :root {
+    /* Light mode — same system, warm-white foundation */
+    --bg: 43 39% 96%;
+    --bg-muted: 41 30% 91%;
+    --surface: 43 30% 98%;
+    --surface-elevated: 41 25% 95%;
+    --surface-hover: 41 20% 91%;
+    --surface-border: 40 15% 80%;
+
+    --text: 150 11% 6%;
+    --text-muted: 120 8% 20%;
+    --text-subtle: 96 3% 40%;
+
+    --brand: 156 42% 15%;
+    --brand-hover: 156 42% 20%;
+    --brand-muted: 147 25% 92%;
+    --brand-text: 43 39% 96%;
+
+    --accent: 37 40% 38%;
+    --accent-hover: 37 40% 32%;
+    --accent-muted: 37 30% 90%;
+    --accent-text: 150 11% 6%;
+
+    --silver: 96 3% 45%;
+    --silver-muted: 96 3% 80%;
+
+    --success: 147 40% 30%;
+    --warning: 34 60% 38%;
+    --danger: 3 61% 34%;
+  }
+
+  .dark {
+    /* Dark mode — the default O'Boyle Acquisition OS experience: near-black
+       foundation, warm-white text, green/silver/brass/red used only as
+       controlled accents. */
+    --bg: 150 11% 4%;
+    --bg-muted: 120 8% 7%;
+    --surface: 120 8% 7%;
+    --surface-elevated: 140 10% 9%;
+    --surface-hover: 140 10% 11%;
+    --surface-border: 120 8% 16%;
+
+    --text: 43 39% 93%;
+    --text-muted: 41 25% 80%;
+    --text-subtle: 96 3% 66%;
+
+    --brand: 147 25% 28%;
+    --brand-hover: 147 28% 34%;
+    --brand-muted: 156 30% 12%;
+    --brand-text: 43 39% 93%;
+
+    --accent: 37 31% 47%;
+    --accent-hover: 37 35% 54%;
+    --accent-muted: 37 25% 14%;
+    --accent-text: 150 11% 4%;
+
+    --silver: 96 3% 66%;
+    --silver-muted: 100 4% 40%;
+
+    --success: 147 35% 38%;
+    --warning: 34 55% 45%;
+    --danger: 3 61% 34%;
+  }
+
+  * {
+    @apply border-surface-border;
+  }
+
+  body {
+    @apply bg-bg text-text antialiased font-sans;
+    background-image: radial-gradient(
+      ellipse at top,
+      hsl(var(--surface) / 0.4),
+      transparent 60%
+    );
+    background-attachment: fixed;
+  }
+
+  h1, h2, h3 {
+    @apply font-serif;
+  }
+
+  /* Numerals — timers, money, performance data */
+  .num {
+    @apply font-mono tabular-nums;
+  }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-surface-border rounded;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-text-subtle;
+  }
+}
+
+/* ── Reusable component classes ──────────────────────────────────────────── */
+@layer components {
+  .card {
+    @apply bg-surface border border-surface-border rounded-lg relative;
+    /* Very light ledger-paper ruling — decorative only, kept low-contrast
+       so it never interferes with legibility. */
+    background-image: repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 27px,
+      hsl(var(--silver) / 0.035) 28px
+    );
+  }
+
+  .card-plain {
+    @apply bg-surface border border-surface-border rounded-lg;
+  }
+
+  .btn-primary {
+    @apply bg-brand text-brand-text hover:bg-brand-hover
+           px-4 py-2 rounded text-sm font-medium transition-colors
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply bg-bg-muted text-text hover:bg-surface-hover
+           border border-surface-border
+           px-4 py-2 rounded text-sm font-medium transition-colors;
+  }
+
+  .btn-danger {
+    @apply bg-danger text-brand-text hover:opacity-90
+           px-4 py-2 rounded text-sm font-medium transition-colors;
+  }
+
+  .input {
+    @apply bg-bg border border-surface-border rounded px-3 py-2
+           text-sm text-text placeholder:text-text-subtle
+           focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand
+           transition-colors w-full;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded-sm text-xs font-medium;
+  }
+
+  /* Thin antique-brass rule — used for section dividers, ledger headers */
+  .divider-brass {
+    @apply border-t border-accent/30;
+  }
+
+  /* Thin brushed-silver rule — instrumentation-style dividers */
+  .divider-silver {
+    @apply border-t border-silver/25;
+  }
+
+  /* Small uppercase technical label — timing-board / control-panel style */
+  .label-tech {
+    @apply font-mono text-[10px] uppercase tracking-[0.15em] text-text-subtle;
+  }
+
+  /* Table shell used across CRM list pages (leads, buyers, deals, tasks…) */
+  .table-shell {
+    @apply w-full text-sm border-collapse;
+  }
+  .table-shell thead th {
+    @apply text-left text-[11px] uppercase tracking-wide text-text-subtle
+           font-medium px-3 py-2 border-b border-accent/30;
+  }
+  .table-shell tbody td {
+    @apply px-3 py-2.5 border-b border-surface-border text-text align-top;
+  }
+  .table-shell tbody tr:hover {
+    @apply bg-surface-hover;
+  }
+
+  /* Pulse dot for active/live states */
+  .pulse-dot {
+    @apply w-2 h-2 rounded-full bg-success animate-pulse;
+  }
+
+  /* Subtle blueprint/graph-paper grid — industrial control-panel texture */
+  .texture-grid {
+    background-image:
+      linear-gradient(to right, hsl(var(--silver) / 0.05) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--silver) / 0.05) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+
+  /* Faint checkered strip — speedway motif, used only as a thin accent band */
+  .texture-checkered {
+    background-image:
+      linear-gradient(45deg, hsl(var(--text) / 0.5) 25%, transparent 25%, transparent 75%, hsl(var(--text) / 0.5) 75%),
+      linear-gradient(45deg, hsl(var(--text) / 0.5) 25%, transparent 25%, transparent 75%, hsl(var(--text) / 0.5) 75%);
+    background-size: 8px 8px;
+    background-position: 0 0, 4px 4px;
+  }
+}
+
+/* Watch hands — one continuous compositor-driven rotation per hand, phased
+   into position via a negative animation-delay set once after mount. This
+   is what makes the sweep immune to setInterval/re-render jitter. */
+@keyframes watch-hand-sweep {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .watch-hand {
+    animation-play-state: paused !important;
+  }
+}

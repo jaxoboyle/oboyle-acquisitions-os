@@ -1,0 +1,43 @@
+{
+  "name": "O'Boyle Acquisition Operating System",
+  "short_name": "OAOS",
+  "description": "Private operations headquarters for O'Boyle Acquisitions — run by Big Stein.",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#080A09",
+  "theme_color": "#080A09",
+  "orientation": "portrait-primary",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-apple-180.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    }
+  ],
+  "categories": ["business", "productivity"],
+  "shortcuts": [
+    {
+      "name": "Text Big Stein",
+      "url": "/chat",
+      "description": "Open Big Stein chat"
+    },
+    {
+      "name": "Today",
+      "url": "/today",
+      "description": "View today's plan"
+    }
+  ]
+}
