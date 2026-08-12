@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
+import { useWorkSession } from "@/lib/store/work-session";
 import { cn } from "@/lib/utils";
 import { Dropdown, DropdownItem } from "@/components/ui/Dropdown";
 import { Logo } from "@/components/layout/Logo";
@@ -62,6 +63,14 @@ export function AppShell({
   const pathname = usePathname();
   const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const lastEodReportId = useWorkSession((s) => s.lastEodReportId);
+
+  // Navigate to the freshly-generated End-of-Day review the moment clockOut()
+  // produces one (see lib/store/work-session.ts) — this is the "automatically
+  // trigger" behavior the review is meant to have.
+  useEffect(() => {
+    if (lastEodReportId) router.push(`/reports/${lastEodReportId}`);
+  }, [lastEodReportId, router]);
 
   async function handleLogout() {
     const supabase = createClient();

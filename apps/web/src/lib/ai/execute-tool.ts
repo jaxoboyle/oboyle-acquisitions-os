@@ -1,3 +1,6 @@
+import { verifyProof } from "./verify-proof";
+import { replenishTaskPipeline } from "@/lib/pipeline/replenish";
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnySupabaseClient = import("@supabase/supabase-js").SupabaseClient<any, any, any>;
 
@@ -332,25 +335,79 @@ async function updateTask(userId: string, supabase: AnySupabaseClient, input: Re
   return { success: true, data };
 }
 
+// Shares the same verify-then-replenish pipeline as the UI completion route
+// (api/tasks/[id]/complete) so a task closed through chat behaves identically
+// to one closed through the Complete button — same proof standard, same
+// pipeline replacement, no separate code path that could bypass either.
 async function completeTask(userId: string, supabase: AnySupabaseClient, input: Record<string, unknown>): Promise<Result> {
+  const taskId = input.task_id as string;
+
+  const { data: task, error: loadError } = await supabase
+    .from("tasks")
+    .select("id, title, notes, lead_id, is_non_negotiable, proof_type, proof_required, completed")
+    .eq("id", taskId)
+    .eq("user_id", userId)
+    .single();
+
+  if (loadError || !task) return { success: false, error: "Task not found" };
+  if (task.completed) return { success: false, error: "Task is already completed" };
+
+  const verdict = await verifyProof(
+    { title: task.title, notes: task.notes, proof_required: task.proof_required },
+    { proof_type: task.proof_type ?? "summary", text: input.proof as string | undefined }
+  );
+
+  if (!verdict.approved) {
+    await supabase
+      .from("tasks")
+      .update({
+        proof_status: "rejected",
+        proof_submitted: (input.proof as string) ?? null,
+        proof_submitted_at: new Date().toISOString(),
+        proof_rejection_reason: verdict.reason,
+      })
+      .eq("id", taskId)
+      .eq("user_id", userId);
+
+    return { success: false, error: `Proof rejected: ${verdict.reason}` };
+  }
+
   const { data, error } = await supabase
     .from("tasks")
     .update({
       status: "completed",
       completed: true,
       completed_at: new Date().toISOString(),
-      proof_submitted: input.proof as string | undefined,
-      proof_submitted_at: input.proof ? new Date().toISOString() : undefined,
+      proof_status: "approved",
+      proof_submitted: (input.proof as string) ?? null,
+      proof_submitted_at: new Date().toISOString(),
+      proof_rejection_reason: null,
       actual_minutes: input.actual_minutes as number | undefined,
       completion_pct: 100,
     })
-    .eq("id", input.task_id as string)
+    .eq("id", taskId)
     .eq("user_id", userId)
     .select()
     .single();
 
   if (error) return { success: false, error: error.message };
-  return { success: true, data };
+
+  if (task.lead_id) {
+    await supabase.from("activity_log").insert({
+      user_id: userId,
+      lead_id: task.lead_id,
+      activity_type: "task_completed",
+      description: `Completed: ${task.title}`,
+    });
+  }
+
+  let replacementTask: Record<string, unknown> | null = null;
+  if (task.is_non_negotiable) {
+    const replenished = await replenishTaskPipeline(userId, supabase, taskId);
+    replacementTask = replenished?.task ?? null;
+  }
+
+  return { success: true, data: { ...data, replacementTask } };
 }
 
 async function rescheduleTask(userId: string, supabase: AnySupabaseClient, input: Record<string, unknown>): Promise<Result> {

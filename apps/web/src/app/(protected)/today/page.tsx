@@ -17,7 +17,7 @@ export default async function TodayPage() {
   const [{ data: nonNegotiables }, { data: dueToday }] = await Promise.all([
     supabase
       .from("tasks")
-      .select("id, title, status, completed, priority, is_revenue_producing, estimated_minutes, scheduled_start")
+      .select("id, title, notes, task_type, category, status, completed, priority, is_revenue_producing, estimated_minutes, scheduled_start")
       .eq("user_id", user.id)
       .eq("is_non_negotiable", true)
       .is("deleted_at", null)
@@ -26,7 +26,7 @@ export default async function TodayPage() {
 
     supabase
       .from("tasks")
-      .select("id, title, status, completed, priority, is_revenue_producing, due_date")
+      .select("id, title, notes, task_type, category, status, completed, priority, is_revenue_producing, due_date")
       .eq("user_id", user.id)
       .gte("due_date", `${today}T00:00:00.000Z`)
       .lte("due_date", `${today}T23:59:59.999Z`)
@@ -64,7 +64,7 @@ export default async function TodayPage() {
           <ul className="space-y-3">
             {nonNegotiables.map((task) => (
               <li key={task.id} className="flex items-start gap-3">
-                <TaskCheckbox id={task.id} completed={task.completed} />
+                <TaskCheckbox task={task} />
                 <div className="min-w-0 flex-1">
                   <p className={task.completed ? "text-sm text-text-muted line-through" : "text-sm text-text"}>
                     {task.title}
@@ -98,7 +98,7 @@ export default async function TodayPage() {
           <ul className="space-y-3">
             {dueToday.map((task) => (
               <li key={task.id} className="flex items-start gap-3">
-                <TaskCheckbox id={task.id} completed={task.completed} />
+                <TaskCheckbox task={task} />
                 <p className={task.completed ? "text-sm text-text-muted line-through" : "text-sm text-text"}>
                   {task.title}
                 </p>

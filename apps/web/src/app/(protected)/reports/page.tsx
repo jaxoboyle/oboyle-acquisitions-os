@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { createClient, getAuthedUser } from "@/lib/supabase/server";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -115,6 +116,7 @@ export default async function ReportsPage() {
                   <th>Type</th>
                   <th>Period</th>
                   <th>Generated</th>
+                  <th />
                 </tr>
               </thead>
               <tbody>
@@ -127,6 +129,11 @@ export default async function ReportsPage() {
                       {formatDate(report.period_start)} – {formatDate(report.period_end)}
                     </td>
                     <td className="text-text-muted">{formatRelative(report.generated_at)}</td>
+                    <td>
+                      <Link href={`/reports/${report.id}`} className="text-xs text-brand hover:underline">
+                        View
+                      </Link>
+                    </td>
                   </tr>
                 ))}
               </tbody>

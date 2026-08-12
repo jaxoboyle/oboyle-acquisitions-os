@@ -20,7 +20,7 @@ export default async function TasksPage() {
 
   const { data: tasks } = await supabase
     .from("tasks")
-    .select("id, title, status, completed, priority, category, is_revenue_producing, is_non_negotiable, due_date")
+    .select("id, title, notes, task_type, status, completed, priority, category, is_revenue_producing, is_non_negotiable, due_date")
     .eq("user_id", user.id)
     .is("deleted_at", null)
     .order("completed", { ascending: true })
@@ -53,7 +53,7 @@ export default async function TasksPage() {
               <ul className="divide-y divide-surface-border">
                 {open.map((task) => (
                   <li key={task.id} className="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
-                    <TaskCheckbox id={task.id} completed={task.completed} />
+                    <TaskCheckbox task={task} />
                     <div className="min-w-0 flex-1">
                       <p className="text-sm text-text">{task.title}</p>
                       <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
@@ -82,7 +82,7 @@ export default async function TasksPage() {
               <ul className="divide-y divide-surface-border">
                 {completed.map((task) => (
                   <li key={task.id} className="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
-                    <TaskCheckbox id={task.id} completed={task.completed} />
+                    <TaskCheckbox task={task} />
                     <p className="text-sm text-text-muted line-through">{task.title}</p>
                   </li>
                 ))}

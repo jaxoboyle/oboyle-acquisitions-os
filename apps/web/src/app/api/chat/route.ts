@@ -3,22 +3,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import { createClient } from "@/lib/supabase/server";
 import { BIG_STEIN_TOOLS } from "@/lib/ai/tools";
 import { executeTool } from "@/lib/ai/execute-tool";
-import fs from "node:fs";
-import path from "node:path";
+import { loadBigSteinSystemPrompt } from "@/lib/ai/system-prompt";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
-
-function loadSystemPrompt(): string {
-  try {
-    const promptPath = path.join(process.cwd(), "..", "..", "config", "big-stein-system-prompt.md");
-    return fs.readFileSync(promptPath, "utf-8");
-  } catch {
-    return `You are Big Stein, an AI real estate business operator and accountability boss.
-Help the user run their wholesale real estate business by tracking leads, deals, tasks,
-objectives, and finances. Be direct, analytical, and focused on execution.`;
-  }
-}
 
 export async function POST(req: NextRequest) {
   const supabase = await createClient();
@@ -54,7 +42,7 @@ export async function POST(req: NextRequest) {
   }
 
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const systemPrompt = loadSystemPrompt();
+  const systemPrompt = loadBigSteinSystemPrompt();
   const model = process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-6";
 
   const encoder = new TextEncoder();
