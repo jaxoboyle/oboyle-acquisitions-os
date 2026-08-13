@@ -1,4 +1,5 @@
 import { requestBigSteinJson } from "./json-call";
+import { checkAndRolloverObjectives } from "@/lib/objectives/rollover";
 import { todayISO } from "@/lib/utils";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -45,6 +46,12 @@ export async function generateEodReview(
     .maybeSingle();
 
   if (!workday) return null;
+
+  // Clocking out is the natural daily checkpoint — this is where today's
+  // objective (and any weekly/monthly/etc. objective ending today) gets
+  // archived with a real planned-vs-actual review and its successor
+  // created, per the objective expiration/rollover system.
+  await checkAndRolloverObjectives(userId, supabase);
 
   if (workday.eod_review_generated_at) {
     const { data: existing } = await supabase

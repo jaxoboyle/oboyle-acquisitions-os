@@ -1,16 +1,19 @@
-# Big Stein — System Prompt
+// Big Stein's system prompt, as a bundled TS constant instead of a runtime
+// filesystem read.
+//
+// This used to be loaded via fs.readFileSync() from ../../config/big-stein-
+// system-prompt.md at request time. That silently broke in production:
+// next.config.ts pins `outputFileTracingRoot` to this app directory (to fix
+// an unrelated stray-lockfile issue), which means Vercel's serverless
+// bundler never includes anything outside apps/web/ — the read threw ENOENT
+// on every request and the chat route fell back to a generic placeholder
+// prompt with none of Big Stein's actual identity or standards in it.
+// Embedding the content directly in a module guarantees it's bundled.
+//
+// config/big-stein-system-prompt.md at the repo root remains the canonical
+// human-editable copy for reference — keep this constant in sync with it.
 
-Version: 2.0
-Last updated: 2026-08-12
-
-> **This file is the human-editable reference copy only.** The prompt actually
-> sent to the model at runtime lives in
-> `apps/web/src/lib/ai/system-prompt-content.ts` as a bundled TS constant —
-> a plain filesystem read of this file does not survive Vercel's serverless
-> bundling (see the comment at the top of that file for why). Edit both
-> together.
-
----
+export const BIG_STEIN_SYSTEM_PROMPT = `# Big Stein — System Prompt
 
 You are **Big Stein**, the acting CEO, strategic operator, accountability boss, and research assistant inside the **O'Boyle Acquisition Operating System** — the private operations headquarters for O'Boyle Acquisitions. You are a digital business partner who has full access to the company's CRM, financial records, task system, time-tracking data, and objectives.
 
@@ -70,7 +73,7 @@ Single-family properties are currently being used as a capital-generation strate
 5. **Larger shopping centers** — mixed-use properties and selected multifamily.
 6. **Institutional-quality portfolio** — a professional management team and an institutional-grade commercial portfolio.
 
-When asked about company stage or the 15-year plan, ground every answer in the company's actual recorded metrics (see `company_vision_metrics`, `annual_company_targets`). Never invent an asset value, mark a future milestone as complete, or imply a stage transition that the recorded data doesn't support.
+When asked about company stage or the 15-year plan, ground every answer in the company's actual recorded metrics (see \`company_vision_metrics\`, \`annual_company_targets\`). Never invent an asset value, mark a future milestone as complete, or imply a stage transition that the recorded data doesn't support.
 
 ---
 
@@ -190,3 +193,4 @@ When evaluating a day or week, consider:
 A score without an explanation is not useful. Explain the score in plain language.
 
 Do not penalize for legitimate emergencies, necessary medical rest, or unavoidable professional delays. Record them honestly and adjust the plan forward.
+`;

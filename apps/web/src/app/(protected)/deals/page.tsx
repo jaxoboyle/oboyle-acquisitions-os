@@ -1,85 +1,61 @@
 import { createClient, getAuthedUser } from "@/lib/supabase/server";
-import { PageHeader } from "@/components/ui/PageHeader";
-import { EmptyState } from "@/components/ui/EmptyState";
-import { Badge } from "@/components/ui/Badge";
-import { formatCurrency, formatDate } from "@/lib/utils";
-import { FileText } from "lucide-react";
-
-const CLOSING_VARIANT: Record<string, "neutral" | "brand" | "warning" | "success" | "danger"> = {
-  pending: "neutral",
-  scheduled: "brand",
-  delayed: "warning",
-  closed: "success",
-  fell_through: "danger",
-};
+import { DealsClient, type DealRow } from "./DealsClient";
 
 export default async function DealsPage() {
   const supabase = await createClient();
   const user = await getAuthedUser();
   if (!user) return null;
 
-  const { data: deals } = await supabase
-    .from("deals")
-    .select("id, contract_date, closing_date, title_status, closing_status, end_buyer_name, assignment_fee, leads(seller_name, address)")
-    .eq("user_id", user.id)
-    .is("deleted_at", null)
-    .order("closing_date", { ascending: true, nullsFirst: false });
+  const [{ data: deals }, { data: leads }, { data: buyers }] = await Promise.all([
+    supabase
+      .from("deals")
+      .select(
+        "id, lead_id, contract_date, earnest_money_amount, earnest_money_due_date, inspection_period_end_date, closing_date, title_company_name, title_company_phone, title_company_email, end_buyer_id, end_buyer_name, buyer_deposit, assignment_fee, title_status, closing_status, deal_stage, deal_notes, leads(seller_name, address)"
+      )
+      .eq("user_id", user.id)
+      .is("deleted_at", null)
+      .order("closing_date", { ascending: true, nullsFirst: false }),
 
-  return (
-    <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
-      <PageHeader
-        title="Deals"
-        description="Contracts under assignment, from executed contract through closing."
-      />
+    supabase
+      .from("leads")
+      .select("id, seller_name, address, asking_price, arv, estimated_repair_costs, mao")
+      .eq("user_id", user.id)
+      .is("deleted_at", null)
+      .order("seller_name", { ascending: true }),
 
-      <div className="card p-0 overflow-hidden">
-        {!deals || deals.length === 0 ? (
-          <EmptyState
-            icon={FileText}
-            title="No deals yet"
-            description="Once a lead's contract is signed, it moves here to track title, closing, and assignment fee through to close."
-          />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="table-shell">
-              <thead>
-                <tr>
-                  <th>Property</th>
-                  <th>End buyer</th>
-                  <th>Title</th>
-                  <th>Closing</th>
-                  <th>Closing date</th>
-                  <th>Assignment fee</th>
-                </tr>
-              </thead>
-              <tbody>
-                {deals.map((deal) => {
-                  const lead = Array.isArray(deal.leads) ? deal.leads[0] : deal.leads;
-                  return (
-                    <tr key={deal.id}>
-                      <td>
-                        <p className="font-medium text-text">{lead?.seller_name ?? "—"}</p>
-                        <p className="text-xs text-text-subtle mt-0.5">{lead?.address ?? ""}</p>
-                      </td>
-                      <td className="text-text-muted">{deal.end_buyer_name ?? "—"}</td>
-                      <td className="text-text-muted capitalize">{deal.title_status.replace(/_/g, " ")}</td>
-                      <td>
-                        <Badge variant={CLOSING_VARIANT[deal.closing_status] ?? "neutral"}>
-                          {deal.closing_status.replace(/_/g, " ")}
-                        </Badge>
-                      </td>
-                      <td className="text-text-muted">{formatDate(deal.closing_date)}</td>
-                      <td className="font-serif text-accent font-medium">
-                        {formatCurrency(deal.assignment_fee)}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    </div>
-  );
+    supabase
+      .from("buyers")
+      .select("id, buyer_name")
+      .eq("user_id", user.id)
+      .is("deleted_at", null)
+      .order("buyer_name", { ascending: true }),
+  ]);
+
+  const dealRows: DealRow[] = (deals ?? []).map((d) => {
+    const lead = Array.isArray(d.leads) ? d.leads[0] : d.leads;
+    return {
+      id: d.id,
+      lead_id: d.lead_id,
+      contract_date: d.contract_date,
+      earnest_money_amount: d.earnest_money_amount,
+      earnest_money_due_date: d.earnest_money_due_date,
+      inspection_period_end_date: d.inspection_period_end_date,
+      closing_date: d.closing_date,
+      title_company_name: d.title_company_name,
+      title_company_phone: d.title_company_phone,
+      title_company_email: d.title_company_email,
+      end_buyer_id: d.end_buyer_id,
+      end_buyer_name: d.end_buyer_name,
+      buyer_deposit: d.buyer_deposit,
+      assignment_fee: d.assignment_fee,
+      title_status: d.title_status,
+      closing_status: d.closing_status,
+      deal_stage: d.deal_stage,
+      deal_notes: d.deal_notes,
+      lead_seller_name: lead?.seller_name ?? "Unknown seller",
+      lead_address: lead?.address ?? null,
+    };
+  });
+
+  return <DealsClient deals={dealRows} leads={leads ?? []} buyers={buyers ?? []} />;
 }

@@ -1,4 +1,6 @@
 import { requestBigSteinJson } from "@/lib/ai/json-call";
+import { ensureObjectiveHierarchy } from "@/lib/objectives/ensure-hierarchy";
+import { checkAndRolloverObjectives } from "@/lib/objectives/rollover";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnySupabaseClient = import("@supabase/supabase-js").SupabaseClient<any, any, any>;
@@ -54,6 +56,12 @@ export async function replenishTaskPipeline(
 
   if ((activeCount ?? 0) >= MAX_PIPELINE_SIZE) return null;
 
+  // Tasks must flow downward from the planning hierarchy, never be
+  // generated in a vacuum — make sure it exists and is current before
+  // reasoning about "the current objective."
+  await ensureObjectiveHierarchy(userId, supabase);
+  await checkAndRolloverObjectives(userId, supabase);
+
   const today = new Date().toISOString().split("T")[0];
 
   const [
@@ -62,6 +70,7 @@ export async function replenishTaskPipeline(
     { data: objectives },
     { data: revenueTarget },
     { data: activeDeals },
+    { data: activeBuyers },
     { data: recentCompleted },
   ] = await Promise.all([
     supabase
@@ -83,9 +92,11 @@ export async function replenishTaskPipeline(
       .order("next_follow_up_date", { ascending: true })
       .limit(5),
 
+    // Full hierarchy context, but level 6/7/8 (monthly/weekly/daily) are
+    // what the generated task should most directly serve.
     supabase
       .from("objectives")
-      .select("level, title, progress_pct, revenue_target, revenue_actual")
+      .select("id, level, title, description, success_criteria, progress_pct, revenue_target, revenue_actual, end_date")
       .eq("user_id", userId)
       .eq("status", "in_progress")
       .is("deleted_at", null)
@@ -102,11 +113,19 @@ export async function replenishTaskPipeline(
 
     supabase
       .from("deals")
-      .select("id, closing_status, assignment_fee, closing_date")
+      .select("id, deal_stage, closing_status, assignment_fee, closing_date, end_buyer_name")
       .eq("user_id", userId)
       .is("deleted_at", null)
-      .not("closing_status", "eq", "closed")
+      .not("deal_stage", "in", '("closed","dead")')
       .limit(10),
+
+    supabase
+      .from("buyers")
+      .select("id, buyer_name, areas, property_types, max_purchase_price, funding_type, proof_of_funds_status, last_contact_date")
+      .eq("user_id", userId)
+      .eq("status", "active")
+      .is("deleted_at", null)
+      .limit(15),
 
     supabase
       .from("tasks")
@@ -117,6 +136,8 @@ export async function replenishTaskPipeline(
       .limit(5),
   ]);
 
+  const dailyObjective = (objectives ?? []).find((o) => o.level === 8) ?? null;
+
   const overdueBias =
     (overdueTaskCount ?? 0) > OVERDUE_BACKLOG_THRESHOLD || (overdueLeads?.length ?? 0) > 0
       ? "The overdue backlog below is significant. Bias strongly toward a task that directly clears the oldest or highest-priority overdue item rather than opening new scope."
@@ -124,16 +145,17 @@ export async function replenishTaskPipeline(
 
   const proposal =
     (await requestBigSteinJson<GeneratedTask>({
-      instructions: `You are choosing the SINGLE next highest-value non-negotiable task for the operator, based on current business state. Never propose busywork — every task must be justified by the priority order already documented in your identity (revenue-producing seller activity first, administration last). ${overdueBias}
+      instructions: `Tasks flow downward from the planning hierarchy: 15-Year Vision → Annual → 90-Day → Monthly → Weekly → Daily → Tasks. You are choosing the SINGLE next highest-value non-negotiable task, and the question is always: "What is the highest-value thing Jackson can do next that moves O'Boyle Acquisition closer to its current objective?" Ground your choice in the active objectives (especially the daily/weekly/monthly ones), leads, buyers, deals, overdue work, and recently completed tasks given below. Never propose busywork — every task must trace back to an active objective or a real, specific lead/buyer/deal. ${overdueBias}
 
 Respond with a JSON object matching exactly this shape:
 {"title": string, "notes": string, "task_type": string, "priority": "low"|"medium"|"high"|"critical", "is_revenue_producing": boolean, "is_non_negotiable": true, "estimated_minutes": number, "due_date": string (ISO date, today or tomorrow) | null, "lead_id": string | null, "proof_type": "screenshot"|"file"|"url"|"written"|"number"|"call_count"|"crm_activity"|"summary"|"other", "proof_required": string (one sentence describing what evidence proves this was done)}`,
       userContent: JSON.stringify({
+        active_objectives: objectives ?? [],
         overdue_task_count: overdueTaskCount ?? 0,
         overdue_leads: overdueLeads ?? [],
-        active_objectives: objectives ?? [],
         revenue_progress: revenueTarget ?? null,
         active_deals: activeDeals ?? [],
+        active_buyers: activeBuyers ?? [],
         recently_completed_tasks: recentCompleted ?? [],
       }),
       maxTokens: 512,
@@ -152,6 +174,7 @@ Respond with a JSON object matching exactly this shape:
       estimated_minutes: proposal.estimated_minutes ?? null,
       due_date: proposal.due_date ?? null,
       lead_id: proposal.lead_id ?? null,
+      objective_id: dailyObjective?.id ?? null,
       proof_type: proposal.proof_type ?? "summary",
       proof_required: proposal.proof_required ?? "Briefly describe what was done.",
       status: "not_started",
