@@ -95,7 +95,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       proof_submitted_at: new Date().toISOString(),
       proof_rejection_reason: null,
       proof_file_paths: body.file_paths ?? [],
-      actual_minutes: body.actual_minutes ?? null,
+      // Only set actual_minutes when explicitly provided — the real total
+      // is normally already accumulated from tracked work sessions (see
+      // work-session.ts's _endActiveEntry), and omitting an unset field
+      // here (rather than coercing to null) avoids wiping that history out
+      // every time a task is completed without a manual override.
+      ...(body.actual_minutes != null ? { actual_minutes: body.actual_minutes } : {}),
     })
     .eq("id", id)
     .eq("user_id", user.id)

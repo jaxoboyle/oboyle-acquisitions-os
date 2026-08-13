@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useState, type CSSProperties } from "react";
-import { Play, Pause, Square, RotateCcw } from "lucide-react";
+import { Play, Pause, Square, RotateCcw, Repeat } from "lucide-react";
 import { useWorkSession, type WorkStatus } from "@/lib/store/work-session";
 import { useNow, usePageHidden } from "@/lib/store/clock";
 import { formatMinutes } from "@/lib/utils";
 import { cn } from "@/lib/utils";
+import { TaskPickerModal } from "./TaskPickerModal";
+import { ClockOutNoteModal } from "./ClockOutNoteModal";
 
 const STATUS_LABEL: Record<WorkStatus, string> = {
   not_clocked_in: "NOT CLOCKED IN",
@@ -47,18 +49,21 @@ export function Watch({ size = "sm" }: { size?: "sm" | "lg" }) {
   const activeEntryStartedAt = useWorkSession((s) => s.activeEntryStartedAt);
   const activeEntryCategory = useWorkSession((s) => s.activeEntryCategory);
   const manualStatus = useWorkSession((s) => s.manualStatus);
-  const selectedTaskId = useWorkSession((s) => s.selectedTaskId);
-  const nonNegotiables = useWorkSession((s) => s.nonNegotiables);
+  const currentTaskLabel = useWorkSession((s) => s.currentTaskLabel);
   const init = useWorkSession((s) => s.init);
   const clockIn = useWorkSession((s) => s.clockIn);
-  const clockOut = useWorkSession((s) => s.clockOut);
-  const startTimer = useWorkSession((s) => s.startTimer);
+  const openTaskPicker = useWorkSession((s) => s.openTaskPicker);
+  const openClockOutNote = useWorkSession((s) => s.openClockOutNote);
   const resumeTimer = useWorkSession((s) => s.resumeTimer);
   const pauseTimer = useWorkSession((s) => s.pauseTimer);
   const stopTimer = useWorkSession((s) => s.stopTimer);
-  const selectTask = useWorkSession((s) => s.selectTask);
   const setManualStatus = useWorkSession((s) => s.setManualStatus);
   const status = useWorkSession((s) => s.status);
+
+  async function handleClockIn() {
+    await clockIn();
+    openTaskPicker("clock_in");
+  }
 
   useEffect(() => {
     init();
@@ -257,35 +262,39 @@ export function Watch({ size = "sm" }: { size?: "sm" | "lg" }) {
       {/* Controls */}
       <div className="mt-4 flex flex-col items-center gap-2 w-full">
         {!isClockedIn ? (
-          <button onClick={() => clockIn()} className="btn-primary flex items-center gap-2 text-sm">
+          <button onClick={handleClockIn} className="btn-primary flex items-center gap-2 text-sm">
             <Play size={14} /> Clock In
           </button>
         ) : (
           <>
-            {size === "lg" && (
-              <select
-                className="input text-sm max-w-xs"
-                value={selectedTaskId ?? ""}
-                onChange={(e) => selectTask(e.target.value || null)}
-                disabled={isWorking}
-              >
-                <option value="">General work (no task selected)</option>
-                {nonNegotiables.map((t) => (
-                  <option key={t.id} value={t.id}>{t.title}</option>
-                ))}
-              </select>
+            {isWorking && currentTaskLabel && (
+              <p className="text-xs text-text-muted text-center max-w-[220px] truncate" title={currentTaskLabel}>
+                Working on <span className="text-text font-medium">{currentTaskLabel}</span>
+              </p>
             )}
 
-            <div className="flex items-center gap-2">
-              {!isWorking ? (
+            <div className="flex items-center gap-2 flex-wrap justify-center">
+              {!isWorking && !isOnBreak && (
                 <button
-                  onClick={() => (isOnBreak ? resumeTimer() : startTimer())}
+                  onClick={() => openTaskPicker("clock_in")}
                   className="btn-primary flex items-center gap-1.5 text-sm"
                 >
-                  <Play size={13} /> {isOnBreak || selectedTaskId ? "Resume" : "Start"}
+                  <Play size={13} /> Start
                 </button>
-              ) : (
+              )}
+              {isOnBreak && (
+                <button onClick={() => resumeTimer()} className="btn-primary flex items-center gap-1.5 text-sm">
+                  <Play size={13} /> Resume
+                </button>
+              )}
+              {isWorking && (
                 <>
+                  <button
+                    onClick={() => openTaskPicker("switch")}
+                    className="btn-secondary flex items-center gap-1.5 text-sm"
+                  >
+                    <Repeat size={13} /> Switch Task
+                  </button>
                   <button onClick={() => pauseTimer()} className="btn-secondary flex items-center gap-1.5 text-sm">
                     <Pause size={13} /> Pause
                   </button>
@@ -295,7 +304,7 @@ export function Watch({ size = "sm" }: { size?: "sm" | "lg" }) {
                 </>
               )}
               <button
-                onClick={() => clockOut()}
+                onClick={() => openClockOutNote()}
                 className="btn-secondary flex items-center gap-1.5 text-sm border-danger/40 text-danger hover:bg-danger/10"
               >
                 <RotateCcw size={13} /> Clock Out
@@ -323,6 +332,9 @@ export function Watch({ size = "sm" }: { size?: "sm" | "lg" }) {
           </>
         )}
       </div>
+
+      <TaskPickerModal />
+      <ClockOutNoteModal />
     </div>
   );
 }

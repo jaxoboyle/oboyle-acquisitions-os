@@ -138,6 +138,34 @@ export async function replenishTaskPipeline(
 
   const dailyObjective = (objectives ?? []).find((o) => o.level === 8) ?? null;
 
+  // Historical actual-vs-estimated performance by task_type, so estimates
+  // for new tasks are grounded in how long similar work has actually taken
+  // rather than a guess — simple averages, no ML.
+  const { data: historicalTasks } = await supabase
+    .from("tasks")
+    .select("task_type, estimated_minutes, actual_minutes")
+    .eq("user_id", userId)
+    .eq("completed", true)
+    .not("task_type", "is", null)
+    .not("actual_minutes", "is", null);
+
+  const byType = new Map<string, { actualSum: number; estimatedSum: number; count: number }>();
+  for (const t of historicalTasks ?? []) {
+    const entry = byType.get(t.task_type) ?? { actualSum: 0, estimatedSum: 0, count: 0 };
+    entry.actualSum += t.actual_minutes ?? 0;
+    entry.estimatedSum += t.estimated_minutes ?? 0;
+    entry.count += 1;
+    byType.set(t.task_type, entry);
+  }
+  const historicalAveragesByType = [...byType.entries()]
+    .filter(([, v]) => v.count >= 2)
+    .map(([task_type, v]) => ({
+      task_type,
+      sample_count: v.count,
+      average_actual_minutes: Math.round(v.actualSum / v.count),
+      average_estimated_minutes: v.estimatedSum > 0 ? Math.round(v.estimatedSum / v.count) : null,
+    }));
+
   const overdueBias =
     (overdueTaskCount ?? 0) > OVERDUE_BACKLOG_THRESHOLD || (overdueLeads?.length ?? 0) > 0
       ? "The overdue backlog below is significant. Bias strongly toward a task that directly clears the oldest or highest-priority overdue item rather than opening new scope."
@@ -146,6 +174,8 @@ export async function replenishTaskPipeline(
   const proposal =
     (await requestBigSteinJson<GeneratedTask>({
       instructions: `Tasks flow downward from the planning hierarchy: 15-Year Vision → Annual → 90-Day → Monthly → Weekly → Daily → Tasks. You are choosing the SINGLE next highest-value non-negotiable task, and the question is always: "What is the highest-value thing Jackson can do next that moves O'Boyle Acquisition closer to its current objective?" Ground your choice in the active objectives (especially the daily/weekly/monthly ones), leads, buyers, deals, overdue work, and recently completed tasks given below. Never propose busywork — every task must trace back to an active objective or a real, specific lead/buyer/deal. ${overdueBias}
+
+For estimated_minutes: if historical_averages_by_task_type has a matching task_type, base your estimate on its average_actual_minutes (adjusted for the specific scope of this task) instead of guessing — real history beats intuition. If nothing matches, estimate normally.
 
 Respond with a JSON object matching exactly this shape:
 {"title": string, "notes": string, "task_type": string, "priority": "low"|"medium"|"high"|"critical", "is_revenue_producing": boolean, "is_non_negotiable": true, "estimated_minutes": number, "due_date": string (ISO date, today or tomorrow) | null, "lead_id": string | null, "proof_type": "screenshot"|"file"|"url"|"written"|"number"|"call_count"|"crm_activity"|"summary"|"other", "proof_required": string (one sentence describing what evidence proves this was done)}`,
@@ -157,9 +187,10 @@ Respond with a JSON object matching exactly this shape:
         active_deals: activeDeals ?? [],
         active_buyers: activeBuyers ?? [],
         recently_completed_tasks: recentCompleted ?? [],
+        historical_averages_by_task_type: historicalAveragesByType,
       }),
       maxTokens: 512,
-    })) ?? fallbackTask(overdueLeads ?? []);
+    })) ?? fallbackTask(overdueLeads ?? [], historicalAveragesByType);
 
   const { data: inserted, error } = await supabase
     .from("tasks")
@@ -193,10 +224,15 @@ Respond with a JSON object matching exactly this shape:
 }
 
 type OverdueLead = { id: string; seller_name: string; last_contact_date: string | null };
+type TaskTypeAverage = { task_type: string; average_actual_minutes: number };
 
 // Deterministic fallback so the pipeline never goes silently empty if the
-// model call fails or returns something unparseable.
-function fallbackTask(overdueLeads: OverdueLead[]): GeneratedTask {
+// model call fails or returns something unparseable. Still uses real
+// historical averages for the estimate when one's available.
+function fallbackTask(overdueLeads: OverdueLead[], historicalAverages: TaskTypeAverage[]): GeneratedTask {
+  const avgFor = (type: string, fallbackMinutes: number) =>
+    historicalAverages.find((h) => h.task_type === type)?.average_actual_minutes ?? fallbackMinutes;
+
   const lead = overdueLeads[0];
   if (lead) {
     return {
@@ -206,7 +242,7 @@ function fallbackTask(overdueLeads: OverdueLead[]): GeneratedTask {
       priority: "high",
       is_revenue_producing: true,
       is_non_negotiable: true,
-      estimated_minutes: 30,
+      estimated_minutes: avgFor("follow_up", 30),
       lead_id: lead.id,
       proof_type: "crm_activity",
       proof_required: "Log the call outcome and next follow-up date on this lead.",
@@ -219,7 +255,7 @@ function fallbackTask(overdueLeads: OverdueLead[]): GeneratedTask {
     priority: "high",
     is_revenue_producing: true,
     is_non_negotiable: true,
-    estimated_minutes: 60,
+    estimated_minutes: avgFor("calls", 60),
     proof_type: "call_count",
     proof_required: "Report number of calls made, contacts reached, and any follow-ups scheduled.",
   };

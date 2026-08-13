@@ -2,8 +2,9 @@ import { notFound } from "next/navigation";
 import { createClient, getAuthedUser } from "@/lib/supabase/server";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { formatDate } from "@/lib/utils";
-import { CheckCircle2, XCircle, Target, TrendingUp } from "lucide-react";
+import { CheckCircle2, XCircle, Target, TrendingUp, Clock } from "lucide-react";
 import type { EodReviewContent } from "@/lib/ai/eod-review";
+import { formatMinutes } from "@/lib/utils";
 
 export default async function ReportDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -52,6 +53,28 @@ export default async function ReportDetailPage({ params }: { params: Promise<{ i
               <Stat label="Deals Advanced" value={String(content.deals_advanced ?? 0)} />
             </dl>
           </section>
+
+          {content.task_time_breakdown && content.task_time_breakdown.length > 0 && (
+            <section className="card p-5">
+              <h2 className="text-sm font-semibold text-text mb-3 flex items-center gap-2">
+                <Clock size={15} className="text-brand" /> Time by Task
+              </h2>
+              <ul className="divide-y divide-surface-border">
+                {content.task_time_breakdown.map((t, idx) => (
+                  <li key={idx} className="py-2 first:pt-0 last:pb-0 flex items-center justify-between gap-3">
+                    <span className="text-sm text-text truncate">{t.title}</span>
+                    <span className="text-xs text-text-muted num shrink-0">{formatMinutes(t.minutes)}</span>
+                  </li>
+                ))}
+                {!!content.unplanned_work_minutes && (
+                  <li className="py-2 flex items-center justify-between gap-3">
+                    <span className="text-sm text-warning">Unplanned / Unlabeled Work</span>
+                    <span className="text-xs text-text-muted num shrink-0">{formatMinutes(content.unplanned_work_minutes)}</span>
+                  </li>
+                )}
+              </ul>
+            </section>
+          )}
 
           <section className="card p-5 space-y-4">
             <ReviewBlock icon={CheckCircle2} iconClass="text-success" title="What went well" text={content.what_went_well} />

@@ -269,7 +269,7 @@ export const BIG_STEIN_TOOLS: Anthropic.Tool[] = [
   {
     name: "get_time_summary",
     description:
-      "Get today's or this week's time-tracking summary: hours worked, category breakdown, productive vs nonproductive.",
+      "Get today's, this week's, or this month's time-tracking summary: hours worked, category breakdown, productive vs nonproductive, unplanned/unplanned-work hours, and the specific tasks that consumed the most time (with their estimated vs actual minutes). Use this before giving productivity feedback or estimating how long similar future tasks will take — always cite the real numbers it returns, never invented ones.",
     input_schema: {
       type: "object" as const,
       properties: {

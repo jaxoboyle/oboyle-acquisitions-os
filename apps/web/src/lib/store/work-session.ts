@@ -21,6 +21,15 @@ export type TodayTask = {
   is_revenue_producing: boolean;
 };
 
+export type PickableTask = {
+  id: string;
+  title: string;
+  is_revenue_producing: boolean;
+  is_non_negotiable: boolean;
+  estimated_minutes: number | null;
+  actual_minutes: number | null;
+};
+
 export type WorkStatus =
   | "not_clocked_in"
   | "working"
@@ -29,12 +38,16 @@ export type WorkStatus =
   | "in_meeting"
   | "day_complete";
 
+export type TaskChoice = { taskId: string | null; unplannedNote?: string };
+
 type WorkSessionState = {
   initialized: boolean;
   loading: boolean;
   workday: Workday;
   nonNegotiables: TodayTask[];
+  pickableTasks: PickableTask[];
   selectedTaskId: string | null;
+  currentTaskLabel: string | null;
   activeEntryId: string | null;
   activeEntryStartedAt: string | null;
   activeEntryCategory: "work" | "break" | null;
@@ -42,21 +55,28 @@ type WorkSessionState = {
   manualStatus: WorkStatus | null;
   bigSteinReviewing: boolean;
   lastEodReportId: string | null;
+  taskPickerOpen: boolean;
+  taskPickerReason: "clock_in" | "switch" | null;
+  clockOutNoteOpen: boolean;
 
   init: () => Promise<void>;
   refreshWorkday: () => Promise<void>;
   refreshNonNegotiables: () => Promise<void>;
+  refreshPickableTasks: () => Promise<void>;
   clockIn: () => Promise<void>;
-  clockOut: () => Promise<void>;
+  clockOut: (note?: string) => Promise<void>;
   setManualStatus: (status: WorkStatus | null) => void;
-  selectTask: (taskId: string | null) => void;
-  startTimer: () => Promise<void>;
+  openTaskPicker: (reason: "clock_in" | "switch") => void;
+  closeTaskPicker: () => void;
+  beginTask: (choice: TaskChoice) => Promise<void>;
+  openClockOutNote: () => void;
+  closeClockOutNote: () => void;
   pauseTimer: () => Promise<void>;
   resumeTimer: () => Promise<void>;
   stopTimer: () => Promise<void>;
   setBigSteinReviewing: (value: boolean) => void;
   status: () => WorkStatus;
-  /** @internal shared by pauseTimer/stopTimer — not for direct use */
+  /** @internal shared by pauseTimer/stopTimer/beginTask — not for direct use */
   _endActiveEntry: () => Promise<void>;
 };
 
@@ -67,7 +87,9 @@ export const useWorkSession = create<WorkSessionState>((set, get) => ({
   loading: false,
   workday: null,
   nonNegotiables: [],
+  pickableTasks: [],
   selectedTaskId: null,
+  currentTaskLabel: null,
   activeEntryId: null,
   activeEntryStartedAt: null,
   activeEntryCategory: null,
@@ -75,6 +97,9 @@ export const useWorkSession = create<WorkSessionState>((set, get) => ({
   manualStatus: null,
   bigSteinReviewing: false,
   lastEodReportId: null,
+  taskPickerOpen: false,
+  taskPickerReason: null,
+  clockOutNoteOpen: false,
 
   async init() {
     if (get().initialized) return;
@@ -115,7 +140,7 @@ export const useWorkSession = create<WorkSessionState>((set, get) => ({
 
       supabase
         .from("time_entries")
-        .select("id, started_at, ended_at, task_id, category, duration_minutes")
+        .select("id, started_at, ended_at, task_id, category, notes, duration_minutes")
         .eq("user_id", user.id)
         .gte("started_at", dayStart)
         .lte("started_at", dayEnd)
@@ -127,13 +152,30 @@ export const useWorkSession = create<WorkSessionState>((set, get) => ({
       .filter((e) => e.category === "break" && e.ended_at)
       .reduce((sum, e) => sum + (e.duration_minutes ?? 0), 0);
 
+    // Only overwrite currentTaskLabel from a rediscovered active entry (e.g.
+    // after a page reload) — don't clobber state that beginTask() just set
+    // locally in the same session. Fetched directly rather than from
+    // pickableTasks, which may not be populated yet on a fresh page load.
+    const rediscovered = active && active.task_id !== get().selectedTaskId;
+    let currentTaskLabel = get().currentTaskLabel;
+    if (rediscovered) {
+      if (active!.task_id) {
+        const { data: task } = await supabase.from("tasks").select("title").eq("id", active!.task_id).maybeSingle();
+        currentTaskLabel = task?.title ?? "Task";
+      } else {
+        currentTaskLabel = active!.notes ? `Other: ${active!.notes}` : "General work";
+      }
+    }
+    if (!active) currentTaskLabel = null;
+
     set({
       workday: workday ?? null,
       activeEntryId: active?.id ?? null,
       activeEntryStartedAt: active?.started_at ?? null,
       activeEntryCategory: active ? (active.category === "break" ? "break" : "work") : null,
       breakMinutesBase,
-      selectedTaskId: active?.task_id ?? get().selectedTaskId,
+      selectedTaskId: active?.task_id ?? (active ? null : get().selectedTaskId),
+      currentTaskLabel,
     });
   },
 
@@ -152,6 +194,27 @@ export const useWorkSession = create<WorkSessionState>((set, get) => ({
       .order("scheduled_start", { ascending: true, nullsFirst: false });
 
     set({ nonNegotiables: data ?? [] });
+  },
+
+  // Broader than nonNegotiables — every open task, for the "what are you
+  // working on" picker. Non-negotiables sort first.
+  async refreshPickableTasks() {
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const { data } = await supabase
+      .from("tasks")
+      .select("id, title, is_revenue_producing, is_non_negotiable, estimated_minutes, actual_minutes")
+      .eq("user_id", user.id)
+      .eq("completed", false)
+      .neq("status", "cancelled")
+      .is("deleted_at", null)
+      .order("is_non_negotiable", { ascending: false })
+      .order("due_date", { ascending: true, nullsFirst: false })
+      .limit(50);
+
+    set({ pickableTasks: data ?? [] });
   },
 
   async clockIn() {
@@ -177,23 +240,27 @@ export const useWorkSession = create<WorkSessionState>((set, get) => ({
     window.dispatchEvent(new Event("oaos:workday-changed"));
   },
 
-  async clockOut() {
+  async clockOut(note) {
     const { workday, activeEntryId } = get();
     if (!workday) return;
     const supabase = createClient();
 
     if (activeEntryId) {
-      await get().stopTimer();
+      await get()._endActiveEntry();
     }
 
     const { data } = await supabase
       .from("workdays")
-      .update({ clocked_out_at: new Date().toISOString() })
+      .update({
+        clocked_out_at: new Date().toISOString(),
+        ...(note ? { daily_notes: note } : {}),
+      })
       .eq("id", workday.id)
       .select()
       .single();
 
     if (data) set({ workday: data, manualStatus: "day_complete" });
+    set({ clockOutNoteOpen: false, taskPickerOpen: false, taskPickerReason: null });
     window.dispatchEvent(new Event("oaos:workday-changed"));
 
     // End-of-day CEO review — built from today's actual data, not generic
@@ -218,11 +285,23 @@ export const useWorkSession = create<WorkSessionState>((set, get) => ({
     set({ manualStatus: status });
   },
 
-  selectTask(taskId) {
-    set({ selectedTaskId: taskId });
+  openTaskPicker(reason) {
+    get().refreshPickableTasks();
+    set({ taskPickerOpen: true, taskPickerReason: reason });
   },
 
-  async startTimer() {
+  closeTaskPicker() {
+    set({ taskPickerOpen: false, taskPickerReason: null });
+  },
+
+  // The single entry point for starting work on something — used both for
+  // the first task after clocking in and for Switch Task. Ends whatever's
+  // currently active first, so "switch" is just "end current, begin next."
+  async beginTask(choice) {
+    if (get().activeEntryId) {
+      await get()._endActiveEntry();
+    }
+
     const supabase = createClient();
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
@@ -234,36 +313,51 @@ export const useWorkSession = create<WorkSessionState>((set, get) => ({
       if (!workday) return;
     }
 
-    const { selectedTaskId, nonNegotiables } = get();
-    const task = nonNegotiables.find((t) => t.id === selectedTaskId);
+    const task = choice.taskId ? get().pickableTasks.find((t) => t.id === choice.taskId) : null;
+    const unplannedNote = choice.taskId ? null : (choice.unplannedNote?.trim() || null);
 
     const { data } = await supabase
       .from("time_entries")
       .insert({
         user_id: user.id,
         workday_id: workday.id,
-        task_id: selectedTaskId,
+        task_id: choice.taskId,
         category: "other",
         is_productive: true,
         is_revenue_producing: task?.is_revenue_producing ?? false,
+        notes: unplannedNote,
         started_at: new Date().toISOString(),
       })
       .select()
       .single();
 
     if (data) {
-      set({ activeEntryId: data.id, activeEntryStartedAt: data.started_at, activeEntryCategory: "work" });
+      set({
+        activeEntryId: data.id,
+        activeEntryStartedAt: data.started_at,
+        activeEntryCategory: "work",
+        selectedTaskId: choice.taskId,
+        currentTaskLabel: task ? task.title : unplannedNote ? `Other: ${unplannedNote}` : "General work",
+      });
     }
-    set({ manualStatus: "working" });
+    set({ manualStatus: "working", taskPickerOpen: false, taskPickerReason: null });
+  },
+
+  openClockOutNote() {
+    set({ clockOutNoteOpen: true });
+  },
+
+  closeClockOutNote() {
+    set({ clockOutNoteOpen: false });
   },
 
   async resumeTimer() {
     // If currently on break, close the break entry first (without crediting
-    // its duration toward actual_minutes) before opening a new work entry.
+    // its duration toward actual_minutes) before resuming the same task.
     if (get().activeEntryCategory === "break") {
       await get()._endActiveEntry();
     }
-    await get().startTimer();
+    await get().beginTask({ taskId: get().selectedTaskId });
   },
 
   async pauseTimer() {
@@ -299,13 +393,14 @@ export const useWorkSession = create<WorkSessionState>((set, get) => ({
 
   async stopTimer() {
     await get()._endActiveEntry();
-    set({ selectedTaskId: null, manualStatus: null });
+    set({ selectedTaskId: null, currentTaskLabel: null, manualStatus: null });
   },
 
   // internal helper — not part of the public action surface, but simplest
-  // to colocate given both pause and stop need identical entry-closing logic.
+  // to colocate given pause/stop/beginTask all need identical entry-closing
+  // logic.
   async _endActiveEntry() {
-    const { activeEntryId, activeEntryStartedAt, activeEntryCategory, workday } = get();
+    const { activeEntryId, activeEntryStartedAt, activeEntryCategory, workday, selectedTaskId } = get();
     if (!activeEntryId || !activeEntryStartedAt) return;
     const supabase = createClient();
 
@@ -329,6 +424,23 @@ export const useWorkSession = create<WorkSessionState>((set, get) => ({
         .from("workdays")
         .update({ actual_minutes: workday.actual_minutes + durationMinutes })
         .eq("id", workday.id);
+
+      // Combine every session against a task into its running total —
+      // leaving and coming back to a task adds up rather than overwrites.
+      if (selectedTaskId) {
+        const { data: taskRow } = await supabase
+          .from("tasks")
+          .select("actual_minutes")
+          .eq("id", selectedTaskId)
+          .single();
+        if (taskRow) {
+          await supabase
+            .from("tasks")
+            .update({ actual_minutes: (taskRow.actual_minutes ?? 0) + durationMinutes })
+            .eq("id", selectedTaskId);
+          window.dispatchEvent(new Event("oaos:tasks-changed"));
+        }
+      }
     }
 
     set({ activeEntryId: null, activeEntryStartedAt: null, activeEntryCategory: null });

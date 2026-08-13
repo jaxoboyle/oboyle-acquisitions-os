@@ -17,6 +17,8 @@ export type EodReviewContent = {
   offers: number;
   buyers_contacted: number;
   deals_advanced: number;
+  task_time_breakdown: Array<{ title: string; minutes: number }>;
+  unplanned_work_minutes: number;
   what_went_well: string;
   where_fell_short: string;
   time_wasted: string;
@@ -126,7 +128,7 @@ export async function generateEodReview(
 
     supabase
       .from("time_entries")
-      .select("category, duration_minutes, is_productive, is_revenue_producing")
+      .select("task_id, category, duration_minutes, is_productive, is_revenue_producing, notes")
       .eq("user_id", userId)
       .gte("started_at", dayStart)
       .lte("started_at", dayEnd),
@@ -146,6 +148,27 @@ export async function generateEodReview(
     activityCountsToday[a.activity_type] = (activityCountsToday[a.activity_type] ?? 0) + 1;
   }
 
+  // Real per-task time for today — this is what lets the review say "3.2
+  // hours on seller calls, 45 minutes on follow-ups" instead of a vague
+  // total, and what unplanned/unlabeled time actually cost today.
+  const taskMinutesToday = new Map<string, number>();
+  let unplannedMinutesToday = 0;
+  for (const e of timeEntriesToday ?? []) {
+    const mins = e.duration_minutes ?? 0;
+    if (e.task_id) {
+      taskMinutesToday.set(e.task_id, (taskMinutesToday.get(e.task_id) ?? 0) + mins);
+    } else if (e.category === "other") {
+      unplannedMinutesToday += mins;
+    }
+  }
+  let taskTimeBreakdownToday: Array<{ title: string; minutes: number }> = [];
+  if (taskMinutesToday.size > 0) {
+    const { data: taskTitles } = await supabase.from("tasks").select("id, title").in("id", [...taskMinutesToday.keys()]);
+    taskTimeBreakdownToday = (taskTitles ?? [])
+      .map((t) => ({ title: t.title, minutes: taskMinutesToday.get(t.id) ?? 0 }))
+      .sort((a, b) => b.minutes - a.minutes);
+  }
+
   const gatheredData = {
     date: today,
     hours_worked: Math.round((workday.actual_minutes / 60) * 10) / 10,
@@ -156,19 +179,20 @@ export async function generateEodReview(
     activity_counts_today: activityCountsToday,
     leads_created_today: leadsCreatedToday ?? 0,
     deals_updated_today: dealsUpdatedToday ?? 0,
-    time_entries_today: timeEntriesToday ?? [],
+    task_time_breakdown_today: taskTimeBreakdownToday,
+    unplanned_work_minutes_today: unplannedMinutesToday,
     weekly_monthly_objectives: objectives ?? [],
   };
 
   const content = await requestBigSteinJson<EodReviewContent>({
-    instructions: `Write today's End-of-Day CEO Review using ONLY the actual data provided below — no generic motivational filler, every claim grounded in the numbers given.
+    instructions: `Write today's End-of-Day CEO Review using ONLY the actual data provided below — no generic motivational filler, every claim grounded in the numbers given. Use task_time_breakdown_today to name specific tasks and how long they actually took (e.g. "3.2 hours on seller calls, 45 minutes on follow-ups") rather than speaking only in totals — this is the whole point of tracking it. Call out unplanned_work_minutes_today specifically if it's a meaningful chunk of the day.
 
 Respond with a JSON object matching exactly this shape:
-{"hours_worked": number, "target_hours": number, "tasks_completed": number, "tasks_active": number, "tasks_overdue": number, "seller_calls": number, "leads_generated": number, "follow_ups": number, "offers": number, "buyers_contacted": number, "deals_advanced": number, "what_went_well": string, "where_fell_short": string, "time_wasted": string, "score": number (0-10), "improvements": string[] (1-3 items), "weekly_progress_note": string, "next_priority": string}
+{"hours_worked": number, "target_hours": number, "tasks_completed": number, "tasks_active": number, "tasks_overdue": number, "seller_calls": number, "leads_generated": number, "follow_ups": number, "offers": number, "buyers_contacted": number, "deals_advanced": number, "task_time_breakdown": [{"title": string, "minutes": number}] (copy from task_time_breakdown_today, top 5 max), "unplanned_work_minutes": number (copy from unplanned_work_minutes_today), "what_went_well": string, "where_fell_short": string, "time_wasted": string, "score": number (0-10), "improvements": string[] (1-3 items), "weekly_progress_note": string, "next_priority": string}
 
 Derive seller_calls/leads_generated/follow_ups/offers/buyers_contacted from activity_counts_today's activity_type keys (freeform strings like "call", "follow_up", "offer_sent", "buyer_contact" — match by substring). Default to 0 rather than guessing a number that isn't supported by the data.`,
     userContent: JSON.stringify(gatheredData),
-    maxTokens: 1200,
+    maxTokens: 1400,
   });
 
   if (!content) return null;

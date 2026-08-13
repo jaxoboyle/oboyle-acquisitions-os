@@ -3,6 +3,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Badge } from "@/components/ui/Badge";
 import { TaskCheckbox } from "@/components/tasks/TaskCheckbox";
+import { TaskTimeStats } from "@/components/tasks/TaskTimeStats";
 import { formatDate } from "@/lib/utils";
 import { CheckSquare } from "lucide-react";
 
@@ -18,13 +19,32 @@ export default async function TasksPage() {
   const user = await getAuthedUser();
   if (!user) return null;
 
-  const { data: tasks } = await supabase
-    .from("tasks")
-    .select("id, title, notes, task_type, status, completed, priority, category, is_revenue_producing, is_non_negotiable, due_date")
-    .eq("user_id", user.id)
-    .is("deleted_at", null)
-    .order("completed", { ascending: true })
-    .order("due_date", { ascending: true, nullsFirst: false });
+  const [{ data: tasks }, { data: sessionEntries }] = await Promise.all([
+    supabase
+      .from("tasks")
+      .select(
+        "id, title, notes, task_type, status, completed, priority, category, is_revenue_producing, is_non_negotiable, due_date, estimated_minutes, actual_minutes"
+      )
+      .eq("user_id", user.id)
+      .is("deleted_at", null)
+      .order("completed", { ascending: true })
+      .order("due_date", { ascending: true, nullsFirst: false }),
+
+    // Session counts per task — "combine all sessions" is already reflected
+    // in tasks.actual_minutes; this is just the count for display.
+    supabase
+      .from("time_entries")
+      .select("task_id")
+      .eq("user_id", user.id)
+      .not("task_id", "is", null)
+      .not("ended_at", "is", null),
+  ]);
+
+  const sessionCounts = new Map<string, number>();
+  for (const entry of sessionEntries ?? []) {
+    if (!entry.task_id) continue;
+    sessionCounts.set(entry.task_id, (sessionCounts.get(entry.task_id) ?? 0) + 1);
+  }
 
   const open = (tasks ?? []).filter((t) => !t.completed);
   const completed = (tasks ?? []).filter((t) => t.completed);
@@ -67,6 +87,11 @@ export default async function TasksPage() {
                         {task.is_non_negotiable && <Badge variant="brand">Non-negotiable</Badge>}
                         {task.is_revenue_producing && <Badge variant="accent">Revenue</Badge>}
                       </div>
+                      <TaskTimeStats
+                        estimatedMinutes={task.estimated_minutes}
+                        actualMinutes={task.actual_minutes}
+                        sessionCount={sessionCounts.get(task.id) ?? 0}
+                      />
                     </div>
                   </li>
                 ))}
@@ -83,7 +108,14 @@ export default async function TasksPage() {
                 {completed.map((task) => (
                   <li key={task.id} className="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
                     <TaskCheckbox task={task} />
-                    <p className="text-sm text-text-muted line-through">{task.title}</p>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm text-text-muted line-through">{task.title}</p>
+                      <TaskTimeStats
+                        estimatedMinutes={task.estimated_minutes}
+                        actualMinutes={task.actual_minutes}
+                        sessionCount={sessionCounts.get(task.id) ?? 0}
+                      />
+                    </div>
                   </li>
                 ))}
               </ul>

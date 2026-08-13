@@ -541,16 +541,18 @@ async function getTimeSummary(userId: string, supabase: AnySupabaseClient, perio
 
   const { data, error } = await supabase
     .from("time_entries")
-    .select("duration_minutes, category, is_productive, is_revenue_producing")
+    .select("task_id, duration_minutes, category, is_productive, is_revenue_producing")
     .eq("user_id", userId)
     .gte("started_at", start.toISOString());
 
   if (error) return { success: false, error: error.message };
 
   const summary: Record<string, number> = {};
+  const taskMinutes = new Map<string, number>();
   let totalMinutes = 0;
   let revenueMinutes = 0;
   let productiveMinutes = 0;
+  let unplannedMinutes = 0;
 
   for (const entry of data ?? []) {
     const mins = entry.duration_minutes ?? 0;
@@ -558,6 +560,26 @@ async function getTimeSummary(userId: string, supabase: AnySupabaseClient, perio
     if (entry.is_revenue_producing) revenueMinutes += mins;
     if (entry.is_productive) productiveMinutes += mins;
     summary[entry.category] = (summary[entry.category] ?? 0) + mins;
+    if (entry.task_id) {
+      taskMinutes.set(entry.task_id, (taskMinutes.get(entry.task_id) ?? 0) + mins);
+    } else if (entry.category === "other") {
+      unplannedMinutes += mins;
+    }
+  }
+
+  // Real task titles/estimates for the tasks actually worked on this
+  // period, so Big Stein can cite specifics rather than just totals.
+  let topTasks: Array<{ title: string; actual_minutes: number; estimated_minutes: number | null }> = [];
+  if (taskMinutes.size > 0) {
+    const { data: taskRows } = await supabase
+      .from("tasks")
+      .select("id, title, estimated_minutes")
+      .in("id", [...taskMinutes.keys()]);
+
+    topTasks = (taskRows ?? [])
+      .map((t) => ({ title: t.title, actual_minutes: taskMinutes.get(t.id) ?? 0, estimated_minutes: t.estimated_minutes }))
+      .sort((a, b) => b.actual_minutes - a.actual_minutes)
+      .slice(0, 10);
   }
 
   return {
@@ -566,9 +588,11 @@ async function getTimeSummary(userId: string, supabase: AnySupabaseClient, perio
       total_hours: Math.round((totalMinutes / 60) * 10) / 10,
       revenue_producing_hours: Math.round((revenueMinutes / 60) * 10) / 10,
       productive_hours: Math.round((productiveMinutes / 60) * 10) / 10,
+      unplanned_work_hours: Math.round((unplannedMinutes / 60) * 10) / 10,
       by_category: Object.fromEntries(
         Object.entries(summary).map(([k, v]) => [k, Math.round((v / 60) * 10) / 10])
       ),
+      top_tasks_by_time: topTasks,
     },
   };
 }
