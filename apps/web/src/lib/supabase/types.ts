@@ -112,6 +112,8 @@ export type Database = {
           typical_closing_speed: string | null;
           preferred_title_company: string | null;
           notes: string | null;
+          status: "active" | "inactive" | "do_not_contact";
+          last_contact_date: string | null;
           deleted_at: string | null;
           created_at: string;
           updated_at: string;
@@ -140,6 +142,15 @@ export type Database = {
           assignment_fee: number | null;
           title_status: string;
           closing_status: string;
+          deal_stage:
+            | "analyzing"
+            | "negotiating"
+            | "under_contract"
+            | "finding_buyer"
+            | "assigned"
+            | "closing"
+            | "closed"
+            | "dead";
           deal_notes: string | null;
           deleted_at: string | null;
           created_at: string;
@@ -172,9 +183,25 @@ export type Database = {
           scheduled_start: string | null;
           scheduled_end: string | null;
           completion_pct: number | null;
+          proof_type:
+            | "screenshot"
+            | "file"
+            | "url"
+            | "written"
+            | "number"
+            | "call_count"
+            | "crm_activity"
+            | "summary"
+            | "other"
+            | null;
+          proof_status: "not_required" | "pending_review" | "approved" | "rejected";
           proof_required: string | null;
           proof_submitted: string | null;
           proof_submitted_at: string | null;
+          proof_rejection_reason: string | null;
+          proof_file_paths: Json;
+          generated_by: "user" | "big_stein";
+          replaced_task_id: string | null;
           blocker_description: string | null;
           blocker_type: string | null;
           big_stein_notes: string | null;
@@ -253,6 +280,7 @@ export type Database = {
           day_score: number | null;
           day_score_explanation: string | null;
           daily_notes: string | null;
+          eod_review_generated_at: string | null;
           created_at: string;
           updated_at: string;
         };

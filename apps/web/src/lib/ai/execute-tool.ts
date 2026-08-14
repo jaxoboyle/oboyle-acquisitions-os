@@ -358,7 +358,7 @@ async function completeTask(userId: string, supabase: AnySupabaseClient, input: 
   );
 
   if (!verdict.approved) {
-    await supabase
+    const { error: rejectUpdateError } = await supabase
       .from("tasks")
       .update({
         proof_status: "rejected",
@@ -368,6 +368,10 @@ async function completeTask(userId: string, supabase: AnySupabaseClient, input: 
       })
       .eq("id", taskId)
       .eq("user_id", userId);
+
+    if (rejectUpdateError) {
+      console.error("[complete_task tool] failed to persist proof rejection", rejectUpdateError);
+    }
 
     return { success: false, error: `Proof rejected: ${verdict.reason}` };
   }

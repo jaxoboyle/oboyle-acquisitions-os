@@ -68,7 +68,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const proofSummary = serializeProof(body);
 
   if (!verdict.approved) {
-    await supabase
+    const { error: rejectUpdateError } = await supabase
       .from("tasks")
       .update({
         proof_status: "rejected",
@@ -79,6 +79,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       })
       .eq("id", id)
       .eq("user_id", user.id);
+
+    // The rejection reason shown to the user comes from Big Stein's verdict,
+    // not this write — but if persisting the rejection itself failed (e.g. a
+    // schema mismatch), that's a real problem worth surfacing loudly rather
+    // than silently discarding, since the task would otherwise sit with a
+    // stale proof_status forever.
+    if (rejectUpdateError) {
+      console.error("[tasks/complete] failed to persist proof rejection", rejectUpdateError);
+    }
 
     return NextResponse.json({ approved: false, reason: verdict.reason });
   }
