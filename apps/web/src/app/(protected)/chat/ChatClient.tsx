@@ -1,11 +1,20 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Plus, MessageSquare, Loader2, AlertCircle, Search, Globe } from "lucide-react";
+import { Send, Plus, MessageSquare, Loader2, AlertCircle, Search, Globe, Paperclip, X, FileText } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { formatRelative } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 import { useWorkSession } from "@/lib/store/work-session";
+
+type AttachedBatch = {
+  batch_id: string;
+  filename: string;
+  total_rows: number;
+  valid_rows: number;
+};
+
+const ACCEPTED_IMPORT_TYPES = ".csv,.xlsx,.xls,.pdf,.txt";
 
 type Conversation = {
   id: string;
@@ -55,9 +64,14 @@ export function ChatClient({
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [toolActive, setToolActive] = useState<string | null>(null);
+  const [attachedBatch, setAttachedBatch] = useState<AttachedBatch | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [dragActive, setDragActive] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   // Load messages when conversation changes
@@ -92,9 +106,60 @@ export function ChatClient({
     return data.id;
   }
 
-  async function send(text: string) {
-    if (!text.trim() || streaming) return;
+  async function uploadFile(file: File) {
+    setUploadError(null);
+    setUploading(true);
+    try {
+      let convId = activeConvId;
+      if (!convId) convId = await createConversation();
+
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("conversationId", convId);
+
+      const res = await fetch("/api/chat/upload", { method: "POST", body: formData });
+      const body = await res.json();
+
+      if (!res.ok) {
+        setUploadError(body.error ?? "Could not read that file.");
+        return;
+      }
+
+      setAttachedBatch({
+        batch_id: body.batch_id,
+        filename: body.filename,
+        total_rows: body.total_rows,
+        valid_rows: body.valid_rows,
+      });
+      inputRef.current?.focus();
+    } catch {
+      setUploadError("Upload failed. Check your connection and try again.");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function handleFileInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) uploadFile(file);
+    e.target.value = "";
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDragActive(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) uploadFile(file);
+  }
+
+  async function send(rawText: string) {
+    if ((!rawText.trim() && !attachedBatch) || streaming) return;
     setError(null);
+
+    const pendingBatch = attachedBatch;
+    const text = pendingBatch
+      ? `${rawText.trim() || "Add these sellers to my leads."}\n\n[Attached file: ${pendingBatch.filename} — import batch_id ${pendingBatch.batch_id}, ${pendingBatch.total_rows} rows parsed, ~${pendingBatch.valid_rows} look complete enough to import.]`
+      : rawText;
 
     let convId = activeConvId;
     if (!convId) {
@@ -108,6 +173,7 @@ export function ChatClient({
       content: text,
       created_at: new Date().toISOString(),
     };
+    setAttachedBatch(null);
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setStreamingText("");
@@ -326,38 +392,95 @@ export function ChatClient({
         </div>
 
         {/* Input */}
-        <div className="border-t border-surface-border p-3 bg-surface shrink-0">
-          <div className="flex items-end gap-2 max-w-3xl mx-auto">
-            <textarea
-              ref={inputRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Message Big Stein…"
-              rows={1}
-              className="input resize-none max-h-32 overflow-y-auto"
-              style={{ height: "auto" }}
-              onInput={(e) => {
-                const t = e.target as HTMLTextAreaElement;
-                t.style.height = "auto";
-                t.style.height = `${Math.min(t.scrollHeight, 128)}px`;
-              }}
-              disabled={streaming}
-            />
-            <button
-              onClick={() => send(input)}
-              disabled={!input.trim() || streaming}
-              className="btn-primary shrink-0 p-2.5"
-            >
-              {streaming ? (
-                <Loader2 size={15} className="animate-spin" />
-              ) : (
-                <Send size={15} />
-              )}
-            </button>
+        <div
+          className={cn("border-t border-surface-border p-3 bg-surface shrink-0", dragActive && "bg-brand/5")}
+          onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
+          onDragLeave={() => setDragActive(false)}
+          onDrop={handleDrop}
+        >
+          <div className="max-w-3xl mx-auto">
+            {uploadError && (
+              <div className="flex items-start gap-2 text-xs text-danger bg-danger/10 border border-danger/20 rounded px-3 py-2 mb-2">
+                <AlertCircle size={13} className="mt-0.5 shrink-0" />
+                {uploadError}
+                <button onClick={() => setUploadError(null)} className="ml-auto text-text-subtle hover:text-text">
+                  <X size={12} />
+                </button>
+              </div>
+            )}
+
+            {attachedBatch && (
+              <div className="flex items-center gap-2 text-xs bg-brand-muted text-brand rounded px-3 py-2 mb-2">
+                <FileText size={13} className="shrink-0" />
+                <span className="truncate">
+                  {attachedBatch.filename} — {attachedBatch.total_rows} rows parsed
+                  {attachedBatch.valid_rows < attachedBatch.total_rows &&
+                    ` (${attachedBatch.total_rows - attachedBatch.valid_rows} may be incomplete)`}
+                </span>
+                <button
+                  onClick={() => setAttachedBatch(null)}
+                  className="ml-auto text-brand/70 hover:text-brand shrink-0"
+                  aria-label="Remove attachment"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            )}
+
+            {dragActive && (
+              <div className="text-center text-xs text-brand border-2 border-dashed border-brand/40 rounded py-3 mb-2">
+                Drop a CSV, XLSX, PDF, or TXT lead list to attach
+              </div>
+            )}
+
+            <div className="flex items-end gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={ACCEPTED_IMPORT_TYPES}
+                className="hidden"
+                onChange={handleFileInputChange}
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={streaming || uploading}
+                className="btn-secondary shrink-0 p-2.5"
+                aria-label="Attach a seller file"
+                title="Attach a seller list (CSV, XLSX, PDF, TXT)"
+              >
+                {uploading ? <Loader2 size={15} className="animate-spin" /> : <Paperclip size={15} />}
+              </button>
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={attachedBatch ? "Add a note, or send to import…" : "Message Big Stein…"}
+                rows={1}
+                className="input resize-none max-h-32 overflow-y-auto"
+                style={{ height: "auto" }}
+                onInput={(e) => {
+                  const t = e.target as HTMLTextAreaElement;
+                  t.style.height = "auto";
+                  t.style.height = `${Math.min(t.scrollHeight, 128)}px`;
+                }}
+                disabled={streaming}
+              />
+              <button
+                onClick={() => send(input)}
+                disabled={(!input.trim() && !attachedBatch) || streaming}
+                className="btn-primary shrink-0 p-2.5"
+              >
+                {streaming ? (
+                  <Loader2 size={15} className="animate-spin" />
+                ) : (
+                  <Send size={15} />
+                )}
+              </button>
+            </div>
           </div>
           <p className="text-[10px] text-text-subtle text-center mt-1.5">
-            Big Stein organizes information — not legal or financial advice.
+            Big Stein organizes information — not legal or financial advice. Attach a CSV, XLSX, PDF, or TXT lead list to import sellers.
           </p>
         </div>
       </div>

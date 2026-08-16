@@ -27,6 +27,10 @@ export type LeadRecord = {
   priority: string;
   last_contact_date: string | null;
   next_follow_up_date: string | null;
+  disposition?: string | null;
+  disposition_reason?: string | null;
+  disposition_notes?: string | null;
+  disposed_at?: string | null;
 };
 
 const STAGES = [

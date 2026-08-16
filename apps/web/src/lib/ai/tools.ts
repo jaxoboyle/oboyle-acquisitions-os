@@ -290,4 +290,69 @@ export const BIG_STEIN_TOOLS: Anthropic.Tool[] = [
       required: [],
     },
   },
+
+  // ── Seller-file import ──────────────────────────────────────────────────
+  {
+    name: "import_leads_from_file",
+    description:
+      "Commit a previously attached and parsed seller-list file into the Leads database. Call this when the user says things like 'add these sellers to my leads' or 'import this list' after attaching a CSV/XLSX/PDF/TXT file — the batch_id is given to you in the attached-file note in the conversation. Automatically skips rows missing required info and skips duplicates matched by parcel number, property address, or owner+address. Does not require confirmation — report the resulting counts (imported/duplicates/skipped) back to the user afterward exactly as returned.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        batch_id: { type: "string", description: "The import batch UUID from the attached-file note." },
+      },
+      required: ["batch_id"],
+    },
+  },
+  {
+    name: "get_import_batches",
+    description:
+      "List recent seller-file import batches with their outcome counts, including how many of the leads from each batch are still active (not yet dispositioned). Use this to answer questions like 'how many sellers from yesterday's file became active leads?'",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        limit: { type: "number", description: "Max batches to return, default 10" },
+      },
+      required: [],
+    },
+  },
+
+  // ── Disposition / follow-up ─────────────────────────────────────────────
+  {
+    name: "set_lead_disposition",
+    description:
+      "Cross a lead off as dealt with, or mark it for a callback. Valid dispositions: under_contract (creates a linked Deal automatically), follow_up (requires follow_up_date — schedules a callback and surfaces the lead on the Follow Ups view), not_interested, bad_lead, no_response, wrong_information, sold, other (requires a reason). This updates the SAME lead record — it never creates a duplicate. Low-risk for most dispositions, but always confirm with the user before calling with disposition='under_contract' since it creates a real Deal record.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        lead_id: { type: "string", description: "UUID of the lead (use search_leads first if you only have a name/address)." },
+        disposition: {
+          type: "string",
+          enum: ["under_contract", "follow_up", "not_interested", "bad_lead", "no_response", "wrong_information", "sold", "other"],
+        },
+        reason: { type: "string", description: "Free-text reason. Required if disposition is 'other'." },
+        notes: { type: "string" },
+        follow_up_date: { type: "string", description: "ISO date (YYYY-MM-DD). Required if disposition is 'follow_up'." },
+        contract_price: { type: "number", description: "Optional — contract price to seed the new Deal when disposition is under_contract." },
+        confirmed: {
+          type: "boolean",
+          description: "Required and must be true when disposition is 'under_contract' — the user must explicitly confirm before a Deal is created.",
+        },
+      },
+      required: ["lead_id", "disposition"],
+    },
+  },
+  {
+    name: "list_followups",
+    description:
+      "Get leads currently marked follow_up, grouped by whether their follow-up date is overdue, today, or upcoming. Use for questions like 'which follow-ups do I have today?' or 'show me sellers I need to call back this week' (pass within_days: 7 for that).",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        bucket: { type: "string", enum: ["overdue", "today", "upcoming", "all"], description: "Default 'all'." },
+        within_days: { type: "number", description: "When set, limits the 'upcoming' bucket to follow-ups due within this many days." },
+      },
+      required: [],
+    },
+  },
 ];

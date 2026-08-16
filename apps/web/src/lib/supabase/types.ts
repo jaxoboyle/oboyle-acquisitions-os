@@ -86,6 +86,20 @@ export type Database = {
           last_contact_date: string | null;
           next_follow_up_date: string | null;
           assigned_user: string | null;
+          disposition:
+            | "under_contract"
+            | "follow_up"
+            | "not_interested"
+            | "bad_lead"
+            | "no_response"
+            | "wrong_information"
+            | "sold"
+            | "other"
+            | null;
+          disposition_reason: string | null;
+          disposition_notes: string | null;
+          disposed_at: string | null;
+          import_batch_id: string | null;
           deleted_at: string | null;
           created_at: string;
           updated_at: string;
@@ -94,6 +108,32 @@ export type Database = {
           id?: string;
         };
         Update: Partial<Database["public"]["Tables"]["leads"]["Row"]>;
+      };
+      import_batches: {
+        Row: {
+          id: string;
+          user_id: string;
+          conversation_id: string | null;
+          source_filename: string;
+          file_type: "csv" | "xlsx" | "pdf" | "txt";
+          storage_path: string | null;
+          file_size_bytes: number | null;
+          status: "staged" | "processing" | "completed" | "failed";
+          column_mapping: Json;
+          parsed_rows: Json;
+          total_rows: number;
+          imported_count: number;
+          duplicate_count: number;
+          skipped_count: number;
+          skipped_reasons: Json;
+          error_message: string | null;
+          created_at: string;
+          processed_at: string | null;
+        };
+        Insert: Omit<Database["public"]["Tables"]["import_batches"]["Row"], "id" | "created_at"> & {
+          id?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["import_batches"]["Row"]>;
       };
       buyers: {
         Row: {

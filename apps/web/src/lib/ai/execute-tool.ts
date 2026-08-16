@@ -1,5 +1,7 @@
 import { verifyProof } from "./verify-proof";
 import { replenishTaskPipeline } from "@/lib/pipeline/replenish";
+import { runImport } from "@/lib/imports/run-import";
+import { todayISO } from "@/lib/utils";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnySupabaseClient = import("@supabase/supabase-js").SupabaseClient<any, any, any>;
@@ -84,6 +86,25 @@ export async function executeTool(
 
       case "get_clockout_reason_summary":
         return await getClockoutReasonSummary(userId, supabase, (input.period as string) ?? "week");
+
+      case "import_leads_from_file":
+        return await importLeadsFromFile(userId, supabase, input.batch_id as string);
+
+      case "get_import_batches":
+        return await getImportBatches(userId, supabase, (input.limit as number) ?? 10);
+
+      case "set_lead_disposition":
+        if (input.disposition === "under_contract" && !input.confirmed) {
+          return {
+            success: false,
+            requiresConfirmation: true,
+            error: "User confirmation required before marking a lead Under Contract — this creates a real Deal record.",
+          };
+        }
+        return await setLeadDisposition(userId, supabase, input);
+
+      case "list_followups":
+        return await listFollowups(userId, supabase, (input.bucket as string) ?? "all", input.within_days as number | undefined);
 
       default:
         return { success: false, error: `Unknown tool: ${name}` };
@@ -631,4 +652,152 @@ async function getClockoutReasonSummary(userId: string, supabase: AnySupabaseCli
     .sort((a, b) => b.total_minutes - a.total_minutes);
 
   return { success: true, data: ranked };
+}
+
+async function importLeadsFromFile(userId: string, supabase: AnySupabaseClient, batchId: string): Promise<Result> {
+  if (!batchId) return { success: false, error: "batch_id is required." };
+  const result = await runImport(userId, supabase, batchId);
+  if (!result.success) return { success: false, error: result.error };
+  return { success: true, data: result.summary };
+}
+
+async function getImportBatches(userId: string, supabase: AnySupabaseClient, limit: number): Promise<Result> {
+  const { data: batches, error } = await supabase
+    .from("import_batches")
+    .select("id, source_filename, file_type, status, total_rows, imported_count, duplicate_count, skipped_count, created_at, processed_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) return { success: false, error: error.message };
+  if (!batches?.length) return { success: true, data: [] };
+
+  const batchIds = batches.map((b) => b.id);
+  const { data: leadsFromBatches } = await supabase
+    .from("leads")
+    .select("import_batch_id, disposition")
+    .in("import_batch_id", batchIds)
+    .is("deleted_at", null);
+
+  const stillActiveByBatch = new Map<string, number>();
+  for (const lead of leadsFromBatches ?? []) {
+    if (lead.disposition) continue; // dispositioned — no longer "active"
+    stillActiveByBatch.set(lead.import_batch_id, (stillActiveByBatch.get(lead.import_batch_id) ?? 0) + 1);
+  }
+
+  const data = batches.map((b) => ({
+    ...b,
+    still_active_leads: stillActiveByBatch.get(b.id) ?? 0,
+  }));
+
+  return { success: true, data };
+}
+
+const DISPOSITION_LABELS: Record<string, string> = {
+  under_contract: "Under Contract",
+  follow_up: "Follow Up / Circle Back",
+  not_interested: "Not Interested",
+  bad_lead: "Bad Lead",
+  no_response: "No Response",
+  wrong_information: "Wrong Information",
+  sold: "Sold / Already Sold",
+  other: "Other",
+};
+
+async function setLeadDisposition(userId: string, supabase: AnySupabaseClient, input: Record<string, unknown>): Promise<Result> {
+  const leadId = input.lead_id as string;
+  const disposition = input.disposition as string;
+  if (!leadId) return { success: false, error: "lead_id is required." };
+  if (!disposition || !DISPOSITION_LABELS[disposition]) return { success: false, error: "A valid disposition is required." };
+
+  if (disposition === "follow_up" && !input.follow_up_date) {
+    return { success: false, error: "follow_up_date is required when disposition is 'follow_up'." };
+  }
+  if (disposition === "other" && !input.reason) {
+    return { success: false, error: "reason is required when disposition is 'other'." };
+  }
+
+  if (disposition === "under_contract") {
+    const { data: dealId, error } = await supabase.rpc("mark_lead_under_contract", {
+      p_lead_id: leadId,
+      p_reason: (input.reason as string) ?? null,
+      p_notes: (input.notes as string) ?? null,
+      p_contract_price: (input.contract_price as number) ?? null,
+    });
+    if (error) return { success: false, error: error.message };
+    return { success: true, data: { deal_id: dealId, lead_id: leadId, disposition } };
+  }
+
+  const reason = (input.reason as string) || DISPOSITION_LABELS[disposition];
+  const updates: Record<string, unknown> = {
+    disposition,
+    disposition_reason: reason,
+    disposition_notes: (input.notes as string) ?? null,
+    disposed_at: new Date().toISOString(),
+  };
+  if (disposition === "follow_up") updates.next_follow_up_date = input.follow_up_date as string;
+
+  const { data, error } = await supabase
+    .from("leads")
+    .update(updates)
+    .eq("id", leadId)
+    .eq("user_id", userId)
+    .select()
+    .single();
+
+  if (error) return { success: false, error: error.message };
+
+  await supabase.from("activity_log").insert({
+    user_id: userId,
+    lead_id: leadId,
+    activity_type: "disposition_change",
+    description: `Marked ${DISPOSITION_LABELS[disposition]}${reason && reason !== DISPOSITION_LABELS[disposition] ? `: ${reason}` : ""}`,
+  });
+
+  return { success: true, data };
+}
+
+async function listFollowups(
+  userId: string,
+  supabase: AnySupabaseClient,
+  bucket: string,
+  withinDays?: number
+): Promise<Result> {
+  const { data, error } = await supabase
+    .from("leads")
+    .select("id, seller_name, phone, address, city, state, next_follow_up_date, disposition_notes, lead_source, stage")
+    .eq("user_id", userId)
+    .eq("disposition", "follow_up")
+    .is("deleted_at", null)
+    .order("next_follow_up_date", { ascending: true });
+
+  if (error) return { success: false, error: error.message };
+
+  const today = todayISO();
+  const cutoff = withinDays != null ? addDaysISO(today, withinDays) : null;
+
+  const grouped = {
+    overdue: [] as typeof data,
+    today: [] as typeof data,
+    upcoming: [] as typeof data,
+  };
+
+  for (const lead of data ?? []) {
+    const due = lead.next_follow_up_date;
+    if (!due || due < today) grouped.overdue.push(lead);
+    else if (due === today) grouped.today.push(lead);
+    else if (!cutoff || due <= cutoff) grouped.upcoming.push(lead);
+  }
+
+  if (bucket === "all") return { success: true, data: grouped };
+  if (bucket === "overdue") return { success: true, data: grouped.overdue };
+  if (bucket === "today") return { success: true, data: grouped.today };
+  if (bucket === "upcoming") return { success: true, data: grouped.upcoming };
+  return { success: true, data: grouped };
+}
+
+function addDaysISO(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().split("T")[0];
 }

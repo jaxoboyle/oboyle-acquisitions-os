@@ -19,18 +19,28 @@ export async function ensureObjectiveHierarchy(userId: string, supabase: AnySupa
   const today = new Date();
   const todayStr = toISODate(today);
 
+  // Steady-state (nothing missing, the overwhelmingly common case — this
+  // runs on every single /objectives page load) used to cost 6 sequential
+  // round trips, one getActive() call at a time waiting on the last. All
+  // six levels are independent reads, so one query covering all of them
+  // replaces that chain; only the levels found missing fall back to
+  // individual create() calls, which DO have a real parent-id dependency.
+  const { data: activeRows } = await supabase
+    .from("objectives")
+    .select("id, level, created_at")
+    .eq("user_id", userId)
+    .eq("status", "in_progress")
+    .is("deleted_at", null)
+    .in("level", [1, 4, 5, 6, 7, 8])
+    .order("created_at", { ascending: false });
+
+  const activeByLevel = new Map<number, ActiveObjective>();
+  for (const row of (activeRows ?? []) as Array<ActiveObjective & { level: number }>) {
+    if (!activeByLevel.has(row.level)) activeByLevel.set(row.level, { id: row.id });
+  }
+
   async function getActive(level: number): Promise<ActiveObjective | null> {
-    const { data } = await supabase
-      .from("objectives")
-      .select("id")
-      .eq("user_id", userId)
-      .eq("level", level)
-      .eq("status", "in_progress")
-      .is("deleted_at", null)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    return data ?? null;
+    return activeByLevel.get(level) ?? null;
   }
 
   async function create(level: number, parentId: string | null, fields: Record<string, unknown>): Promise<ActiveObjective | null> {
