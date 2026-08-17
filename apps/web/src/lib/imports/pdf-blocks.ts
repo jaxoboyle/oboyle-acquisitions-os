@@ -119,6 +119,12 @@ function cleanValue(v: string): string | null {
   if (!trimmed) return null;
   if (RE_NEGATORY_EXACT.test(trimmed)) return null;
   if (trimmed.length < 40 && RE_NEGATORY_PHRASE.test(trimmed)) return null;
+  // A negatory phrase near the START of a longer value ("in listing NOT
+  // SHOWN Fort Pierce · St. Lucie County · NV 5/10") means a missed label
+  // match let trailing heading/field text run on into this one — the
+  // field itself is still "not shown," the rest isn't a real value for it.
+  const negatoryNearStart = RE_NEGATORY_PHRASE.exec(trimmed);
+  if (negatoryNearStart && negatoryNearStart.index < 20) return null;
   return trimmed;
 }
 

@@ -58,7 +58,7 @@ export function normalizeRow(
 
   let notesParts = [byField.conversation_notes, ...extras].filter(Boolean);
 
-  const seller_name = byField.seller_name ?? null;
+  let seller_name = byField.seller_name ?? null;
   const address = byField.address ?? null;
   const parcel_number = byField.parcel_number ?? null;
 
@@ -80,8 +80,15 @@ export function normalizeRow(
     if (!hasAnything) {
       valid = false;
       skip_reason = "Empty record — no usable fields were found in this block";
-    } else if (!seller_name && !hasIdentifyingInfo) {
-      notesParts = ["[Needs Research] Missing owner name and property identifiers — verify from source report.", ...notesParts];
+    } else if (!seller_name) {
+      // leads.seller_name is NOT NULL in the schema — a transparent
+      // placeholder (never a fabricated name) satisfies that constraint
+      // while still making it obvious in the Leads list that the owner
+      // is genuinely unknown and needs research.
+      seller_name = address ? `Unverified Owner — ${address}` : "Unverified Owner (Needs Research)";
+      if (!hasIdentifyingInfo) {
+        notesParts = ["[Needs Research] Missing owner name and property identifiers — verify from source report.", ...notesParts];
+      }
     }
   } else if (!seller_name && !address) {
     valid = false;
