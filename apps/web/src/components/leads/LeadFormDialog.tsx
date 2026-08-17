@@ -15,6 +15,7 @@ export type LeadRecord = {
   city: string | null;
   state: string | null;
   zip: string | null;
+  parcel_number?: string | null;
   lead_source: string | null;
   asking_price: number | null;
   arv: number | null;

@@ -1,14 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Plus, Pencil, Trash2, Users, Loader2, XCircle, ExternalLink } from "lucide-react";
+import { Plus, Pencil, Trash2, Users, Loader2, XCircle, ExternalLink, Search } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Badge } from "@/components/ui/Badge";
 import { formatCurrency, formatDate } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { LeadFormDialog, type LeadRecord } from "@/components/leads/LeadFormDialog";
 import { LeadDispositionDialog } from "@/components/leads/LeadDispositionDialog";
 
@@ -45,12 +46,61 @@ const DISPOSITION_VARIANT: Record<string, "brand" | "warning" | "danger" | "neut
 // awaiting a callback) are deliberately excluded.
 const CLOSED_DISPOSITIONS = new Set(["not_interested", "bad_lead", "no_response", "wrong_information", "sold", "other"]);
 
+type FilterKey = "all" | "active" | "under_contract" | "follow_up" | "not_interested" | "bad_lead" | "no_response" | "wrong_information" | "sold" | "other";
+
+const FILTERS: { key: FilterKey; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "active", label: "Active" },
+  { key: "follow_up", label: "Follow Up" },
+  { key: "under_contract", label: "Under Contract" },
+  { key: "not_interested", label: "Not Interested" },
+  { key: "bad_lead", label: "Bad Lead" },
+  { key: "no_response", label: "No Response" },
+  { key: "wrong_information", label: "Wrong Info" },
+  { key: "sold", label: "Sold" },
+  { key: "other", label: "Other" },
+];
+
+function matchesFilter(lead: LeadRecord, filter: FilterKey): boolean {
+  if (filter === "all") return true;
+  if (filter === "active") return !lead.disposition;
+  return lead.disposition === filter;
+}
+
 export function LeadsClient({ leads }: { leads: LeadRecord[] }) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<LeadRecord | null>(null);
   const [dispositioning, setDispositioning] = useState<LeadRecord | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<FilterKey>("all");
   const router = useRouter();
+
+  const counts = useMemo(() => {
+    const c: Record<FilterKey, number> = {
+      all: leads.length, active: 0, under_contract: 0, follow_up: 0,
+      not_interested: 0, bad_lead: 0, no_response: 0, wrong_information: 0, sold: 0, other: 0,
+    };
+    for (const lead of leads) {
+      if (!lead.disposition) c.active++;
+      else if (lead.disposition in c) c[lead.disposition as FilterKey]++;
+    }
+    return c;
+  }, [leads]);
+
+  const visibleLeads = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return leads.filter((lead) => {
+      if (!matchesFilter(lead, filter)) return false;
+      if (!q) return true;
+      return (
+        lead.seller_name?.toLowerCase().includes(q) ||
+        lead.address?.toLowerCase().includes(q) ||
+        lead.phone?.toLowerCase().includes(q) ||
+        lead.parcel_number?.toLowerCase().includes(q)
+      );
+    });
+  }, [leads, search, filter]);
 
   function openCreate() {
     setEditing(null);
@@ -83,12 +133,49 @@ export function LeadsClient({ leads }: { leads: LeadRecord[] }) {
         }
       />
 
+      {leads.length > 0 && (
+        <div className="space-y-3">
+          <div className="relative max-w-sm">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-subtle" />
+            <input
+              className="input pl-8 text-sm"
+              placeholder="Search seller, address, phone, or APN…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+
+          <div className="flex flex-wrap gap-1.5">
+            {FILTERS.map((f) => (
+              <button
+                key={f.key}
+                onClick={() => setFilter(f.key)}
+                className={cn(
+                  "text-xs px-2.5 py-1.5 rounded border transition-colors",
+                  filter === f.key
+                    ? "border-brand bg-brand-muted text-brand font-medium"
+                    : "border-surface-border text-text-muted hover:text-text hover:border-brand/40"
+                )}
+              >
+                {f.label} <span className="text-text-subtle">({counts[f.key]})</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="card p-0 overflow-hidden">
         {leads.length === 0 ? (
           <EmptyState
             icon={Users}
             title="No leads yet"
             description="Seller leads you add will appear here — click Add Lead above to enter your first one."
+          />
+        ) : visibleLeads.length === 0 ? (
+          <EmptyState
+            icon={Search}
+            title="No leads match"
+            description="Try a different search term or filter."
           />
         ) : (
           <div className="overflow-x-auto">
@@ -106,7 +193,7 @@ export function LeadsClient({ leads }: { leads: LeadRecord[] }) {
                 </tr>
               </thead>
               <tbody>
-                {leads.map((lead) => {
+                {visibleLeads.map((lead) => {
                   const closed = lead.disposition && CLOSED_DISPOSITIONS.has(lead.disposition);
                   return (
                   <tr key={lead.id}>

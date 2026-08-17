@@ -21,7 +21,10 @@ export function Modal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="fixed inset-0 bg-black/80" onClick={closeDisabled ? undefined : onClose} />
-      <div className={cn("relative card w-full p-5 max-h-[85vh] overflow-y-auto", widthClassName)}>
+      <div
+        className={cn("relative card w-full p-5 max-h-[85vh] overflow-y-auto", widthClassName)}
+        style={{ boxShadow: "var(--shadow-lg)" }}
+      >
         <div className="flex items-start justify-between gap-3 mb-4">
           <div>
             <h2 className="text-sm font-semibold text-text">{title}</h2>

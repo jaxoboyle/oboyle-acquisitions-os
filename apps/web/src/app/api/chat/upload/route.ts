@@ -117,6 +117,11 @@ export async function POST(req: NextRequest) {
       .filter(([, field]) => field)
       .map(([header, field]) => `${header} → ${field}`),
     warnings: parsed.warnings,
-    sample: normalizedRows.slice(0, 3).map((r) => ({ seller_name: r.seller_name, address: r.address, phone: r.phone })),
+    sample: normalizedRows.slice(0, 5).map((r) => ({
+      seller_name: r.seller_name,
+      address: r.address,
+      phone: r.phone,
+      parcel_number: r.parcel_number,
+    })),
   });
 }

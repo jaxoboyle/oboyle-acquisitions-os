@@ -1,17 +1,20 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Plus, MessageSquare, Loader2, AlertCircle, Search, Globe, Paperclip, X, FileText } from "lucide-react";
+import { Send, Plus, MessageSquare, Loader2, AlertCircle, Search, Globe, Paperclip, X, FileText, Users } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { formatRelative } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 import { useWorkSession } from "@/lib/store/work-session";
+
+type ImportSample = { seller_name: string | null; address: string | null; phone: string | null; parcel_number: string | null };
 
 type AttachedBatch = {
   batch_id: string;
   filename: string;
   total_rows: number;
   valid_rows: number;
+  sample: ImportSample[];
 };
 
 const ACCEPTED_IMPORT_TYPES = ".csv,.xlsx,.xls,.pdf,.txt";
@@ -68,6 +71,7 @@ export function ChatClient({
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [committingImport, setCommittingImport] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -130,6 +134,7 @@ export function ChatClient({
         filename: body.filename,
         total_rows: body.total_rows,
         valid_rows: body.valid_rows,
+        sample: body.sample ?? [],
       });
       inputRef.current?.focus();
     } catch {
@@ -143,6 +148,70 @@ export function ChatClient({
     const file = e.target.files?.[0];
     if (file) uploadFile(file);
     e.target.value = "";
+  }
+
+  async function addSystemMessage(convId: string, content: string) {
+    const msg: Message = {
+      id: crypto.randomUUID(),
+      role: "assistant",
+      content,
+      created_at: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, msg]);
+    await supabase.from("chat_messages").insert({
+      conversation_id: convId,
+      user_id: userId,
+      role: "assistant",
+      content,
+    });
+  }
+
+  // Confirms the preview shown after upload — a direct, deterministic
+  // commit (not routed through Big Stein/the LLM) so clicking "Import
+  // Leads" is instant and doesn't depend on the model inferring intent.
+  // The natural-language path ("Add these sellers to my leads") still
+  // works separately via the import_leads_from_file tool.
+  async function confirmImport() {
+    if (!attachedBatch || committingImport) return;
+    const batch = attachedBatch;
+    setCommittingImport(true);
+    try {
+      const res = await fetch(`/api/imports/${batch.batch_id}`, { method: "POST" });
+      const summary = await res.json();
+      setAttachedBatch(null);
+
+      let convId = activeConvId;
+      if (!convId) convId = await createConversation();
+
+      if (!res.ok) {
+        await addSystemMessage(convId, `Couldn't import ${batch.filename}: ${summary.error ?? "unknown error"}`);
+        return;
+      }
+
+      const lines = [
+        `**${summary.imported_count} new lead${summary.imported_count === 1 ? "" : "s"} added**`,
+        `**${summary.duplicate_count} duplicate${summary.duplicate_count === 1 ? "" : "s"} skipped**`,
+      ];
+      if (summary.skipped_count > 0) {
+        lines.push(`**${summary.skipped_count} row${summary.skipped_count === 1 ? "" : "s"} could not be imported** because they were missing enough information.`);
+      }
+      await addSystemMessage(convId, lines.join("\n"));
+    } catch {
+      setUploadError("Import failed. Check your connection and try again.");
+    } finally {
+      setCommittingImport(false);
+    }
+  }
+
+  async function cancelImport() {
+    if (!attachedBatch) return;
+    const batchId = attachedBatch.batch_id;
+    setAttachedBatch(null);
+    try {
+      await fetch(`/api/imports/${batchId}`, { method: "DELETE" });
+    } catch {
+      // Best-effort — the batch just sits unused if this fails, no harm done.
+    }
   }
 
   function handleDrop(e: React.DragEvent) {
@@ -410,20 +479,49 @@ export function ChatClient({
             )}
 
             {attachedBatch && (
-              <div className="flex items-center gap-2 text-xs bg-brand-muted text-brand rounded px-3 py-2 mb-2">
-                <FileText size={13} className="shrink-0" />
-                <span className="truncate">
-                  {attachedBatch.filename} — {attachedBatch.total_rows} rows parsed
-                  {attachedBatch.valid_rows < attachedBatch.total_rows &&
-                    ` (${attachedBatch.total_rows - attachedBatch.valid_rows} may be incomplete)`}
-                </span>
-                <button
-                  onClick={() => setAttachedBatch(null)}
-                  className="ml-auto text-brand/70 hover:text-brand shrink-0"
-                  aria-label="Remove attachment"
-                >
-                  <X size={13} />
-                </button>
+              <div className="card p-3 mb-2 text-xs">
+                <div className="flex items-center gap-2 text-text">
+                  <FileText size={13} className="shrink-0 text-brand" />
+                  <span className="font-medium truncate">{attachedBatch.filename}</span>
+                  <button
+                    onClick={cancelImport}
+                    className="ml-auto text-text-subtle hover:text-danger shrink-0"
+                    aria-label="Cancel import"
+                    disabled={committingImport}
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+
+                <p className="mt-1.5 text-text-muted">
+                  Found <span className="font-medium text-text">{attachedBatch.valid_rows} seller record{attachedBatch.valid_rows === 1 ? "" : "s"}</span>
+                  {attachedBatch.total_rows > attachedBatch.valid_rows &&
+                    ` (${attachedBatch.total_rows - attachedBatch.valid_rows} row${attachedBatch.total_rows - attachedBatch.valid_rows === 1 ? "" : "s"} look incomplete and may be skipped)`}
+                </p>
+
+                {attachedBatch.sample.length > 0 && (
+                  <ul className="mt-2 space-y-1 border-t border-surface-border pt-2">
+                    {attachedBatch.sample.map((r, i) => (
+                      <li key={i} className="flex items-center gap-1.5 text-text-muted">
+                        <Users size={11} className="shrink-0 text-text-subtle" />
+                        <span className="text-text truncate">{r.seller_name ?? "—"}</span>
+                        {r.address && <span className="truncate">— {r.address}</span>}
+                        {r.phone && <span className="shrink-0 text-text-subtle">{r.phone}</span>}
+                        {r.parcel_number && <span className="shrink-0 text-text-subtle">APN {r.parcel_number}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                <div className="flex items-center justify-end gap-2 mt-2.5 pt-2 border-t border-surface-border">
+                  <button onClick={cancelImport} className="btn-secondary text-xs px-3 py-1.5" disabled={committingImport}>
+                    Cancel
+                  </button>
+                  <button onClick={confirmImport} className="btn-primary text-xs px-3 py-1.5 flex items-center gap-1.5" disabled={committingImport}>
+                    {committingImport && <Loader2 size={12} className="animate-spin" />}
+                    Import Leads
+                  </button>
+                </div>
               </div>
             )}
 
