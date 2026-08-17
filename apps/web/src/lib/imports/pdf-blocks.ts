@@ -43,7 +43,7 @@ const LABELS: Array<{ field: LabelField; patterns: string[] }> = [
   // field-label boundary.
   { field: "parcel_number", patterns: ["parcel / apn", "parcel number", "parcel id", "apn"] },
   { field: "asking_price", patterns: ["asking price"] },
-  { field: "estimated_value", patterns: ["est. value", "estimated value", "est value"] },
+  { field: "estimated_value", patterns: ["price / est.", "price/est.", "price / est", "est. value", "estimated value", "est value"] },
   { field: "arv", patterns: ["est. arv", "estimated arv", "arv"] },
   { field: "motivation_score", patterns: ["motivation score"] },
   { field: "owner_direct", patterns: ["owner-direct?", "owner direct?", "owner-direct", "owner direct"] },
@@ -95,13 +95,22 @@ const MASTER_LABEL_RE = new RegExp(
 // parcel/price-shaped things) rarely occur as incidental prose, so those
 // are always trusted.
 const WEAK_FIELDS = new Set<LabelField>([
-  "seller_name", "city", "county", "state", "occupancy", "foreclosure",
+  "seller_name", "city", "county", "state", "zip", "occupancy", "foreclosure",
   "tax_delinquency", "probate", "vacancy", "strategy", "motivation",
   "first_outreach", "source", "notes",
 ]);
-const ADJACENT_GAP_CHARS = 28;
+// Tight-adjacency fallback for weak labels that share one physical source
+// line ("Owner-Direct? OWNER DIRECT Occupancy NV") — kept small on purpose.
+// The real, more reliable signal is startsFreshLine (below): a label that
+// begins its own original source line is almost always a genuine field,
+// regardless of how long the previous field's value ran.
+const ADJACENT_GAP_CHARS = 12;
 
-const RE_PARCEL_IN_TEXT = /parcel\s*(?:number|id|#|no\.?)?[:\s]+(\d[\d-]{5,24}\d)/i;
+// Florida county parcel IDs vary by county: hyphen-grouped ("13-38-40-006-
+// 000-47030-8"), continuous with a trailing decimal ("33401900004064000103.0"),
+// or dash-grouped-with-no-decimal — the shared shape is just "digits, with
+// occasional - or . separators, 8+ digits total."
+const RE_PARCEL_IN_TEXT = /parcel\s*(?:number|id|#|no\.?)?[:\s]+(\d[\d.-]{6,28}\d)/i;
 const RE_NEGATORY_EXACT = /^(n\/?a|nf|none|unknown|-{1,3}|tbd)$/i;
 const RE_NEGATORY_PHRASE = /\b(not shown|not found|not available|unavailable|not provided)\b/i;
 
@@ -113,13 +122,49 @@ function cleanValue(v: string): string | null {
   return trimmed;
 }
 
+/** Flattens multiline text to one line (so a value can span original line
+ * breaks) while remembering every position where a NEW source line began —
+ * that position set is what lets the label matcher tell "Tax Delinquency"
+ * starting its own fresh line (a real field, however long the previous
+ * field's value ran) apart from "owner" turning up mid-sentence deep in a
+ * paragraph (not a field, just a word). */
+function flattenPreservingLineStarts(text: string): { flat: string; lineStarts: Set<number> } {
+  const lineStarts = new Set<number>();
+  let flat = "";
+  let i = 0;
+  while (i < text.length) {
+    if (/\s/.test(text[i])) {
+      let hadNewline = false;
+      let j = i;
+      while (j < text.length && /\s/.test(text[j])) {
+        if (text[j] === "\n") hadNewline = true;
+        j++;
+      }
+      if (flat.length > 0 && j < text.length) flat += " ";
+      if (hadNewline) lineStarts.add(flat.length);
+      i = j;
+    } else {
+      flat += text[i];
+      i++;
+    }
+  }
+  return { flat, lineStarts };
+}
+
+function isNearLineStart(index: number, lineStarts: Set<number>): boolean {
+  for (let d = -1; d <= 1; d++) if (lineStarts.has(index + d)) return true;
+  return false;
+}
+
 /** Extracts every known label's value from one block of continuous text.
  * Multiline values (label...\n...\ncontinued) and multiple labels sharing
  * one physical line both fall out of the same mechanism: a value is
  * whatever sits between this label match and the next one, with internal
  * newlines flattened to spaces first. */
 export function extractLabeledFields(blockText: string): { fields: PdfBlockFields; leadIn: string } {
-  const flat = blockText.replace(/\s*\n\s*/g, " ").replace(/\s{2,}/g, " ").trim();
+  const { flat: flatRaw, lineStarts } = flattenPreservingLineStarts(blockText);
+  const flat = flatRaw.trim();
+  const trimOffset = flatRaw.length - flatRaw.trimStart().length;
 
   const isAllCapsWord = (s: string) => s === s.toUpperCase() && s !== s.toLowerCase();
 
@@ -135,12 +180,18 @@ export function extractLabeledFields(blockText: string): { fields: PdfBlockField
     // are status-value text echoing the label ("Owner-Direct? OWNER
     // DIRECT"), not a second real label — drop those before the adjacency
     // pass even gets a chance to (wrongly) accept them as "packed" labels.
-    .filter((m) => !isAllCapsWord(m.raw));
+    .filter((m) => !isAllCapsWord(m.raw))
+    // A label glued directly onto a preceding hyphen is virtually always
+    // the tail of a compound word ("non-owner-occupied", "co-owner"), never
+    // a genuine field boundary — this report's real labels are never
+    // hyphen-prefixed.
+    .filter((m) => flat[m.index - 1] !== "-");
 
-  // Drop weak-label matches that aren't sitting immediately next to a prior
-  // accepted label — i.e. keep only the ones that are genuinely part of a
-  // packed "Label A ... Label B" run, not a word that happens to appear
-  // deep inside another field's sentence.
+  // Drop weak-label matches that aren't either (a) tightly packed right
+  // after a prior accepted label on the same source line, or (b) starting
+  // a fresh source line of their own — those are the two shapes a genuine
+  // field label actually takes in this report family. Anything else is a
+  // word that happens to appear mid-sentence inside another field's value.
   const matches: typeof rawMatches = [];
   for (const m of rawMatches) {
     if (!WEAK_FIELDS.has(m.field)) {
@@ -148,9 +199,9 @@ export function extractLabeledFields(blockText: string): { fields: PdfBlockField
       continue;
     }
     const prev = matches[matches.length - 1];
-    const isFirstInBlock = matches.length === 0;
     const isAdjacentToPrior = prev != null && m.index - prev.end <= ADJACENT_GAP_CHARS;
-    if (isFirstInBlock || isAdjacentToPrior) matches.push(m);
+    const startsFreshLine = isNearLineStart(m.index + trimOffset, lineStarts);
+    if (isAdjacentToPrior || startsFreshLine) matches.push(m);
   }
 
   const fields: PdfBlockFields = {};
@@ -241,6 +292,48 @@ export function extractParcelFromText(text: string): string | null {
   return m ? m[1] : null;
 }
 
+// Grid-style addressing ("1550 Avenue Q") has no street-name word at all —
+// the suffix sits directly after the house number — so it needs its own
+// alternative rather than forcing it through the general pattern below.
+const RE_STREET_GRID = /^(\d+\s+(?:Avenue|Ave|Street|St)\s+[A-Z])\b/i;
+const RE_STREET_PREFIX = /^(\d+\s+(?:[NSEW]{1,2}\s+)?[A-Za-z0-9.'-]+(?:\s+[A-Za-z0-9.'-]+){0,3}?\s+(?:Cir(?:cle)?|Ave(?:nue)?|Rd|Dr(?:ive)?|Ln|Way|Blvd|Ct|Pl(?:ace)?|Pkwy|Ter(?:race)?|St(?:reet)?|Trl|Sq|Cove|Run|Loop))\b/i;
+const RE_COUNTY_ZIP = /·?\s*([A-Za-z.\s]{2,30}?)\s*County\s*·?\s*(\d{5})?/i;
+const RE_SCORE = /\b(\d{1,2})\s*\/\s*10\b/;
+
+/** Parses the "heading" text before a block's first recognized label —
+ * this report family (and others like it) puts the street address, city,
+ * county, ZIP, and a motivation score there as one compact unlabeled line
+ * ("1247 NW Leonardo Cir Port St. Lucie · St. Lucie County · 34986 9/10")
+ * rather than under individual field labels. Best-effort: whatever it
+ * can't confidently split out stays in the heading text that the caller
+ * folds into Notes, so nothing is lost either way. */
+export function parseLeadIn(leadIn: string): {
+  address: string | null; city: string | null; county: string | null; zip: string | null; motivationScore: string | null;
+} {
+  if (!leadIn) return { address: null, city: null, county: null, zip: null, motivationScore: null };
+
+  const scoreMatch = leadIn.match(RE_SCORE);
+  const countyMatch = leadIn.match(RE_COUNTY_ZIP);
+  const streetMatch = leadIn.match(RE_STREET_GRID) ?? leadIn.match(RE_STREET_PREFIX);
+
+  let city: string | null = null;
+  if (streetMatch) {
+    // Whatever sits between the end of the street address and the county
+    // marker (or score, or end of string) is the city.
+    const afterStreet = leadIn.slice(streetMatch[0].length);
+    const cityText = afterStreet.split(/·/)[0].replace(RE_SCORE, "").trim();
+    city = cleanValue(cityText.replace(/\s+/g, " "));
+  }
+
+  return {
+    address: streetMatch ? streetMatch[1].trim() : null,
+    city,
+    county: countyMatch ? cleanValue(countyMatch[1].replace(/\s+/g, " ")) : null,
+    zip: countyMatch?.[2] ?? (leadIn.match(/\b(\d{5})\b/)?.[1] ?? null),
+    motivationScore: scoreMatch ? `${scoreMatch[1]}/10` : null,
+  };
+}
+
 /** Converts one block's extracted label fields into the canonical header
  * vocabulary column-map.ts already recognizes ("Owner", "Property Address",
  * "APN", ...), so Mode 2/3 output flows through the exact same
@@ -251,14 +344,15 @@ export function extractParcelFromText(text: string): string | null {
  * is preserved as a clearly labeled line in Notes rather than dropped. */
 export function blockToRow(recordNumber: number | null, fields: PdfBlockFields, leadIn: string): Record<string, string> {
   const row: Record<string, string> = {};
+  const fromHeading = parseLeadIn(leadIn);
 
   if (fields.seller_name) row["Owner"] = fields.seller_name;
-  if (fields.address) row["Property Address"] = fields.address;
+  if (fields.address || fromHeading.address) row["Property Address"] = fields.address ?? fromHeading.address!;
   if (fields.mailing_address) row["Mailing Address"] = fields.mailing_address;
-  if (fields.city) row["City"] = fields.city;
-  if (fields.county) row["County"] = fields.county;
+  if (fields.city || fromHeading.city) row["City"] = fields.city ?? fromHeading.city!;
+  if (fields.county || fromHeading.county) row["County"] = fields.county ?? fromHeading.county!;
   if (fields.state) row["State"] = fields.state;
-  if (fields.zip) row["Zip"] = fields.zip;
+  if (fields.zip || fromHeading.zip) row["Zip"] = fields.zip ?? fromHeading.zip!;
   if (fields.parcel_number) row["APN"] = fields.parcel_number;
   if (fields.asking_price) row["Asking Price"] = fields.asking_price;
   if (fields.arv) row["ARV"] = fields.arv;
@@ -285,7 +379,8 @@ export function blockToRow(recordNumber: number | null, fields: PdfBlockFields, 
   if (recordNumber != null) noteLines.push(`Report record #${recordNumber}`);
   if (leadIn && leadIn.length > 2) noteLines.push(`Heading: ${leadIn}`);
   if (fields.estimated_value) noteLines.push(`Estimated value: ${fields.estimated_value}`);
-  if (fields.motivation_score) noteLines.push(`Motivation score: ${fields.motivation_score}`);
+  const motivationScore = fields.motivation_score ?? fromHeading.motivationScore;
+  if (motivationScore) noteLines.push(`Motivation score: ${motivationScore}`);
   if (fields.foreclosure) noteLines.push(`Foreclosure / Lis Pendens: ${fields.foreclosure}`);
   if (fields.foreclosure_date) noteLines.push(`Foreclosure/auction date: ${fields.foreclosure_date}`);
   if (fields.tax_delinquency) noteLines.push(`Tax delinquency: ${fields.tax_delinquency}`);
@@ -295,13 +390,16 @@ export function blockToRow(recordNumber: number | null, fields: PdfBlockFields, 
   if (fields.first_outreach) noteLines.push(`First outreach: ${fields.first_outreach}`);
   if (fields.notes) noteLines.push(fields.notes);
 
-  // Parcel numbers often live inside a Notes/foreclosure sentence rather
-  // than their own labeled field ("Notes: Parcel 3422-585-0091-000-7.") —
-  // pull it out for the structured APN column while leaving the original
-  // sentence in Notes untouched.
+  // Parcel numbers often live inside a free-text sentence rather than their
+  // own labeled field ("Notes: Parcel 3422-585-0091-000-7.") — and not
+  // reliably inside Notes specifically, since a missed adjacent-label match
+  // can let that sentence spill into whichever weak field was still open
+  // (Source, Strategy, ...). Scan every captured field's text rather than
+  // guessing which one, and pull the number out for the structured APN
+  // column while leaving the original sentence wherever it landed intact.
   if (!row["APN"]) {
-    const fromNotes = extractParcelFromText([fields.notes, fields.foreclosure, fields.tax_delinquency].filter(Boolean).join(" "));
-    if (fromNotes) row["APN"] = fromNotes;
+    const fromAnyField = extractParcelFromText(Object.values(fields).join(" "));
+    if (fromAnyField) row["APN"] = fromAnyField;
   }
 
   if (noteLines.length) row["Notes"] = noteLines.join("\n");

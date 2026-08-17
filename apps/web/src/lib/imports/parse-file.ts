@@ -228,10 +228,6 @@ async function parsePdf(buffer: Buffer): Promise<ParsedFile> {
     return { headers: [], rows: [], warnings: ["No extractable text found in this PDF."] };
   }
 
-  // ── Mode 1 — table detection, using real tab-delimited columns ──
-  const table = tryParsePdfTable(filteredLines);
-  if (table) return table;
-
   // extractText's own line breaks (from pdf.js's hasEOL per glyph run) are
   // more reliable for prose than the tab-reconstructed table lines above,
   // and mergePages keeps multi-page records in one continuous stream —
@@ -244,6 +240,14 @@ async function parsePdf(buffer: Buffer): Promise<ParsedFile> {
     .join("\n");
 
   // ── Mode 2 — numbered property report ──
+  // Checked BEFORE Mode 1's table heuristic, not after: a numbered-record
+  // report is a more specific, more reliable structural signal than "this
+  // one reconstructed line has 2+ header keywords and 2+ tab-separated
+  // cells" — verified directly against a real report where the table
+  // heuristic false-positived on a stray line inside record #1's own field
+  // values (matching "owner"/"price" keywords) and produced 204 garbage
+  // rows before Mode 2 ever got a chance to find the real 28-record
+  // structure that was actually there.
   const numbered = detectNumberedBlocks(cleanedText);
   if (numbered) {
     const rows = numbered.map(({ number, text: blockText }) => {
@@ -257,6 +261,11 @@ async function parsePdf(buffer: Buffer): Promise<ParsedFile> {
       relaxValidity: true,
     };
   }
+
+  // ── Mode 1 — table detection, using real tab-delimited columns ──
+  // Only reached once Mode 2 has ruled out a numbered-record structure.
+  const table = tryParsePdfTable(filteredLines);
+  if (table) return table;
 
   // ── Mode 3 — repeating labeled records, no numbers ──
   const labeled = detectRepeatingLabelBlocks(cleanedText);
