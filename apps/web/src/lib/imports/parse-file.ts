@@ -20,11 +20,19 @@
 import Papa from "papaparse";
 import ExcelJS from "exceljs";
 import { getDocumentProxy, extractText } from "unpdf";
+import { detectNumberedBlocks, detectRepeatingLabelBlocks, extractLabeledFields, blockToRow } from "./pdf-blocks";
+import { tryLlmExtraction } from "./pdf-llm-fallback";
 
 export type ParsedFile = {
   headers: string[];
   rows: Record<string, string>[];
   warnings: string[];
+  // Set for PDF Mode 2/3/4 output: the source report itself already
+  // guarantees "this is a distinct opportunity" (a numbered/labeled
+  // record), so normalizeRow should preserve sparse blocks ("Owner NF",
+  // "Address in listing NOT SHOWN") as Needs-Research leads instead of
+  // discarding them the way an ambiguous CSV row with a blank name would be.
+  relaxValidity?: boolean;
 };
 
 export type SupportedFileType = "csv" | "xlsx" | "pdf" | "txt";
@@ -164,23 +172,26 @@ async function parseXlsx(buffer: Buffer): Promise<ParsedFile> {
   return { headers, rows, warnings };
 }
 
-// PDF seller lists come in three real shapes: a clean exported table, a
-// non-tabular document (a paragraph per seller, or a mail-merge-style
-// letter list), or a scanned/image page with no extractable text at all.
-// This runs all three stages in order and only gives up at the end.
+// PDF seller lists come in five real shapes, tried in order — a layered
+// system rather than one hard-coded strategy, because "one line = one row"
+// (the naive approach) silently fragments any report where a field spans
+// multiple lines or a line carries multiple labels:
 //
-// Stage A — extract raw text via pdf-parse, then detect the scanned case
-// before doing anything else (near-zero text per page is the tell).
-// Stage B — try to read it as a whitespace-column table (existing sellers
-// lists exported from a spreadsheet often look like this in PDF).
-// Stage C — if there's no usable table, segment the text into per-seller
-// blocks (blank-line paragraphs, or a name-line heuristic when the PDF
-// extractor collapsed everything into one paragraph) and pull seller name /
-// address / phone / email / APN / price / distress signals out of each
-// block with field-pattern matching — not a column position. Output uses
-// the same header vocabulary column-map.ts already recognizes ("Seller",
-// "Property Address", "Phone", ...) so it flows through the normal
-// mapColumns → normalizeRow → dedupe pipeline unchanged.
+//   Mode 1 — clean exported table (whitespace/tab columns)
+//   Mode 2 — numbered property report ("#1 ... #2 ... #28") — each numbered
+//            section is ONE record, established by real record-number
+//            markers, not by guessing at name-shaped lines
+//   Mode 3 — repeating labeled records with no numbers (Owner/Property
+//            Address recurring at roughly even intervals marks each record)
+//   Mode 4 — AI extraction fallback: only reached when 1-3 all fail to find
+//            reliable boundaries; the model gets complete text chunks, never
+//            individual lines, and its JSON is schema-validated before use
+//   Mode 5 (checked first, cheaply) — scanned/image PDF with ~no real text
+//
+// Whichever mode fires, output uses the same header vocabulary column-map.ts
+// already recognizes ("Owner", "Property Address", "Phone", ...), so it
+// flows through the normal mapColumns → normalizeRow → dedupe → insert
+// pipeline unchanged — there's exactly one downstream import path.
 async function parsePdf(buffer: Buffer): Promise<ParsedFile> {
   let pdf: Awaited<ReturnType<typeof getDocumentProxy>>;
   try {
@@ -191,9 +202,6 @@ async function parsePdf(buffer: Buffer): Promise<ParsedFile> {
 
   const numpages = pdf.numPages || 1;
 
-  // Reconstruct per-row, tab-delimited lines from real glyph positions —
-  // both for Stage B (table columns) and, flattened, for Stage C (plain
-  // text). Doing this once up front avoids extracting the document twice.
   const tableLines: string[] = [];
   let totalChars = 0;
   for (let pageNum = 1; pageNum <= numpages; pageNum++) {
@@ -203,7 +211,7 @@ async function parsePdf(buffer: Buffer): Promise<ParsedFile> {
     tableLines.push(...reconstructRows(content.items as PdfTextItem[]));
   }
 
-  // ── Stage D check — a scanned/image PDF yields ~zero real glyph text ──
+  // ── Mode 5 check — a scanned/image PDF yields ~zero real glyph text ──
   if (totalChars / numpages < 25) {
     return {
       headers: [],
@@ -220,21 +228,71 @@ async function parsePdf(buffer: Buffer): Promise<ParsedFile> {
     return { headers: [], rows: [], warnings: ["No extractable text found in this PDF."] };
   }
 
-  // ── Stage B — table detection, using real tab-delimited columns ──
+  // ── Mode 1 — table detection, using real tab-delimited columns ──
   const table = tryParsePdfTable(filteredLines);
   if (table) return table;
 
-  // ── Stage C — unstructured seller-block extraction ──
   // extractText's own line breaks (from pdf.js's hasEOL per glyph run) are
   // more reliable for prose than the tab-reconstructed table lines above,
-  // and mergePages keeps multi-page letters/blocks in one stream.
+  // and mergePages keeps multi-page records in one continuous stream —
+  // required for both the record-number and repeating-label detectors,
+  // which need to see the whole document as one string.
   const { text } = await extractText(pdf, { mergePages: true });
+  const cleanedText = text
+    .split(/\r?\n/)
+    .filter((l) => !/^page\s+\d+(\s+of\s+\d+)?$/i.test(l.trim()) && !/^\d{1,4}$/.test(l.trim()))
+    .join("\n");
+
+  // ── Mode 2 — numbered property report ──
+  const numbered = detectNumberedBlocks(cleanedText);
+  if (numbered) {
+    const rows = numbered.map(({ number, text: blockText }) => {
+      const { fields, leadIn } = extractLabeledFields(blockText);
+      return blockToRow(number, fields, leadIn);
+    });
+    return {
+      headers: CANONICAL_PDF_HEADERS,
+      rows,
+      warnings: [`Detected ${numbered.length} numbered property record(s) in this report.`],
+      relaxValidity: true,
+    };
+  }
+
+  // ── Mode 3 — repeating labeled records, no numbers ──
+  const labeled = detectRepeatingLabelBlocks(cleanedText);
+  if (labeled && labeled.length >= 3) {
+    const rows = labeled.map((blockText) => {
+      const { fields, leadIn } = extractLabeledFields(blockText);
+      return blockToRow(null, fields, leadIn);
+    });
+    return {
+      headers: CANONICAL_PDF_HEADERS,
+      rows,
+      warnings: [`Detected ${labeled.length} repeating labeled record(s) in this report (no explicit numbering found).`],
+      relaxValidity: true,
+    };
+  }
+
+  // ── Mode 4 — AI extraction fallback ──
+  const llmResult = await tryLlmExtraction(cleanedText);
+  if (llmResult && llmResult.rows.length > 0) {
+    return { headers: CANONICAL_PDF_HEADERS, rows: llmResult.rows, warnings: [llmResult.warning], relaxValidity: true };
+  }
+
+  // ── Last resort — genuinely label-free free text (e.g. a short mail-merge
+  // letter list with no labels or numbering at all) ──
   const proseLines = text
     .split(/\r?\n/)
     .map((l) => l.replace(/\s+$/, ""))
     .filter((l) => !/^page\s+\d+(\s+of\s+\d+)?$/i.test(l.trim()) && !/^\d{1,4}$/.test(l.trim()));
   return parsePdfBlocks(proseLines);
 }
+
+const CANONICAL_PDF_HEADERS = [
+  "Owner", "Property Address", "Mailing Address", "City", "County", "State", "Zip",
+  "Phone", "Email", "APN", "Asking Price", "ARV", "Occupancy", "Repair Level",
+  "Motivation", "Source", "Notes",
+];
 
 type PdfTextItem = { str: string; width: number; height: number; transform: number[] };
 

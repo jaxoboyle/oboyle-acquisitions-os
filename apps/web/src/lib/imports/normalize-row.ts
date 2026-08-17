@@ -15,6 +15,9 @@ export type LeadCandidate = {
   reason_for_selling: string | null;
   property_condition: string | null;
   lead_source: string | null;
+  occupancy: string | null;
+  arv: number | null;
+  repairs_needed: string | null;
   conversation_notes: string | null;
   raw: Record<string, string>;
   valid: boolean;
@@ -28,7 +31,8 @@ export type LeadCandidate = {
  * silently dropped. */
 export function normalizeRow(
   row: Record<string, string>,
-  mapping: Record<string, TargetField | null>
+  mapping: Record<string, TargetField | null>,
+  opts: { relaxValidity?: boolean } = {}
 ): LeadCandidate {
   const byField: Partial<Record<TargetField, string>> = {};
   const extras: string[] = [];
@@ -52,8 +56,7 @@ export function normalizeRow(
     }
   }
 
-  const notesParts = [byField.conversation_notes, ...extras].filter(Boolean);
-  const conversation_notes = notesParts.length ? notesParts.join("\n") : null;
+  let notesParts = [byField.conversation_notes, ...extras].filter(Boolean);
 
   const seller_name = byField.seller_name ?? null;
   const address = byField.address ?? null;
@@ -62,11 +65,25 @@ export function normalizeRow(
   // "Enough information to identify a legitimate seller/property": a name
   // AND at least one of address/parcel/phone. A bare name with nothing else
   // isn't a usable lead.
-  const hasIdentifyingInfo = Boolean(address || parcel_number || byField.phone);
+  const hasIdentifyingInfo = Boolean(address || parcel_number || byField.phone || byField.email);
   let valid = true;
   let skip_reason: string | null = null;
 
-  if (!seller_name && !address) {
+  if (opts.relaxValidity) {
+    // Numbered/labeled property reports (Big Stein PDF Mode 2/3): the
+    // source document itself already asserts "this is a distinct
+    // opportunity" via its own record structure — a sparse block (e.g.
+    // "Owner NF", "Address in listing NOT SHOWN") is still real research
+    // work, not garbage. Only reject a block that captured literally
+    // nothing at all.
+    const hasAnything = Boolean(seller_name || address || parcel_number || byField.phone || byField.email || notesParts.length);
+    if (!hasAnything) {
+      valid = false;
+      skip_reason = "Empty record — no usable fields were found in this block";
+    } else if (!seller_name && !hasIdentifyingInfo) {
+      notesParts = ["[Needs Research] Missing owner name and property identifiers — verify from source report.", ...notesParts];
+    }
+  } else if (!seller_name && !address) {
     valid = false;
     skip_reason = "Missing both owner name and property address";
   } else if (!seller_name) {
@@ -76,6 +93,8 @@ export function normalizeRow(
     valid = false;
     skip_reason = "Missing property address, parcel number, and phone — not enough to identify the property";
   }
+
+  const conversation_notes = notesParts.length ? notesParts.join("\n") : null;
 
   return {
     seller_name,
@@ -91,6 +110,9 @@ export function normalizeRow(
     reason_for_selling: byField.reason_for_selling ?? null,
     property_condition: byField.property_condition ?? null,
     lead_source: byField.lead_source ?? null,
+    occupancy: byField.occupancy ?? null,
+    arv: parseMoney(byField.arv),
+    repairs_needed: byField.repairs_needed ?? null,
     conversation_notes,
     raw: row,
     valid,

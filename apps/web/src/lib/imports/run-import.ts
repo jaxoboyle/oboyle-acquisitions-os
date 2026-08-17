@@ -45,7 +45,7 @@ export async function runImport(
 
   const { data: existingLeads } = await supabase
     .from("leads")
-    .select("id, seller_name, address, parcel_number")
+    .select("id, seller_name, address, parcel_number, phone")
     .eq("user_id", userId)
     .is("deleted_at", null);
 
@@ -84,6 +84,9 @@ export async function runImport(
       reason_for_selling: candidate.reason_for_selling,
       property_condition: candidate.property_condition,
       lead_source: candidate.lead_source ?? `Import: ${batch.source_filename}`,
+      occupancy: candidate.occupancy,
+      arv: candidate.arv,
+      repairs_needed: candidate.repairs_needed,
       conversation_notes: candidate.conversation_notes,
       stage: "new_lead",
       priority: "medium",

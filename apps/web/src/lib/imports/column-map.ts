@@ -18,6 +18,9 @@ export type TargetField =
   | "reason_for_selling"
   | "property_condition"
   | "lead_source"
+  | "occupancy"
+  | "arv"
+  | "repairs_needed"
   | "conversation_notes";
 
 // Ordered so more specific aliases are checked before generic ones (e.g.
@@ -60,6 +63,9 @@ const FIELD_ALIASES: Array<{ field: TargetField; aliases: string[] }> = [
     aliases: ["condition", "property condition", "distress", "distress information", "distressed", "distress info"],
   },
   { field: "lead_source", aliases: ["source", "lead source", "list source"] },
+  { field: "occupancy", aliases: ["occupancy", "occupied"] },
+  { field: "arv", aliases: ["arv", "est arv", "estimated arv", "after repair value"] },
+  { field: "repairs_needed", aliases: ["repair level", "repairs needed", "repairs", "rehab level"] },
   { field: "conversation_notes", aliases: ["notes", "comments", "description", "remarks", "note"] },
 ];
 

@@ -69,7 +69,7 @@ export async function POST(req: NextRequest) {
   }
 
   const columnMapping = mapColumns(parsed.headers);
-  const normalizedRows = parsed.rows.map((row) => normalizeRow(row, columnMapping));
+  const normalizedRows = parsed.rows.map((row) => normalizeRow(row, columnMapping, { relaxValidity: parsed.relaxValidity }));
   const validCount = normalizedRows.filter((r) => r.valid).length;
 
   // Best-effort raw-file storage for reference — the import still proceeds
