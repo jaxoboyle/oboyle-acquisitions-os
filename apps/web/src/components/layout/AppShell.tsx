@@ -24,6 +24,7 @@ import {
   X,
   LogOut,
   ChevronsUpDown,
+  Calculator,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
@@ -42,6 +43,7 @@ const NAV_ITEMS = [
   { href: "/objectives",      label: "Objectives",      icon: Target },
   { href: "/company-vision",  label: "Company Vision",  icon: Landmark },
   { href: "/leads",           label: "Leads",           icon: Users },
+  { href: "/arv-calculator",  label: "Offer Calculator",icon: Calculator },
   { href: "/followups",       label: "Follow Ups",      icon: CalendarClock },
   { href: "/buyers",          label: "Buyers",          icon: ShoppingBag },
   { href: "/deals",           label: "Deals",           icon: FileText },

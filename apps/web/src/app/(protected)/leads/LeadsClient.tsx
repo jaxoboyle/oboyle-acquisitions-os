@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Plus, Pencil, Trash2, Users, Loader2, XCircle, ExternalLink, Search } from "lucide-react";
+import { Plus, Pencil, Trash2, Users, Loader2, XCircle, ExternalLink, Search, Calculator } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -232,6 +232,14 @@ export function LeadsClient({ leads }: { leads: LeadRecord[] }) {
                     <td className="text-text-muted">{formatDate(lead.next_follow_up_date)}</td>
                     <td>
                       <div className="flex items-center gap-2 justify-end">
+                        <Link
+                          href={`/arv-calculator?leadId=${lead.id}`}
+                          className="text-text-subtle hover:text-brand transition-colors"
+                          aria-label="Run ARV"
+                          title="Run ARV / cash offer calculator"
+                        >
+                          <Calculator size={14} />
+                        </Link>
                         <button
                           onClick={() => setDispositioning(lead)}
                           className="text-text-subtle hover:text-accent transition-colors"

@@ -9,6 +9,10 @@ import { selectRelevantContent } from "@/lib/files/chunk";
 import { copyAttachmentToTaskProof, downloadAttachment } from "@/lib/files/storage";
 import { IMAGE_MEDIA_TYPES } from "@/lib/files/types";
 import type { ImageAttachment } from "./json-call";
+import { fetchPropertyFacts, fetchSaleComps, isPropertyDataConfigured, PropertyDataNotConfiguredError } from "@/lib/arv/property-data";
+import { selectComps, calculateArvFromComps, type SubjectProperty } from "@/lib/arv/comps";
+import { calculateMao, calculateOfferRange, resolveActiveRepairs, DEFAULT_BUYER_PCT, DEFAULT_WHOLESALE_FEE } from "@/lib/arv/calculate";
+import { saveAnalysis, getAnalysis, type AnalysisInsert, type CompRow } from "@/lib/arv/repository";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnySupabaseClient = import("@supabase/supabase-js").SupabaseClient<any, any, any>;
@@ -134,6 +138,18 @@ export async function executeTool(
 
       case "list_followups":
         return await listFollowups(userId, supabase, (input.bucket as string) ?? "all", input.within_days as number | undefined);
+
+      case "run_arv_analysis":
+        return await runArvAnalysis(userId, supabase, input);
+
+      case "get_arv_analysis":
+        return await getArvAnalysisTool(userId, supabase, input);
+
+      case "recalculate_mao":
+        return await recalculateMaoTool(userId, supabase, input);
+
+      case "save_arv_analysis_to_lead":
+        return await saveArvAnalysisToLead(userId, supabase, input);
 
       default:
         return { success: false, error: `Unknown tool: ${name}` };
@@ -1044,4 +1060,239 @@ function addDaysISO(iso: string, days: number): string {
   const d = new Date(`${iso}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().split("T")[0];
+}
+
+// ── ARV / Cash Offer Calculator ──────────────────────────────────────────────
+
+async function runArvAnalysis(userId: string, supabase: AnySupabaseClient, input: Record<string, unknown>): Promise<Result> {
+  const address = input.address as string;
+  if (!address?.trim()) return { success: false, error: "address is required." };
+
+  const leadId = (input.lead_id as string) ?? null;
+  if (leadId) {
+    const { data: lead } = await supabase.from("leads").select("id").eq("id", leadId).eq("user_id", userId).single();
+    if (!lead) return { success: false, error: "Lead not found." };
+  }
+
+  const buyerPct = (input.buyer_pct as number) ?? DEFAULT_BUYER_PCT;
+  const wholesaleFee = (input.wholesale_fee as number) ?? DEFAULT_WHOLESALE_FEE;
+
+  if (!isPropertyDataConfigured()) {
+    return {
+      success: false,
+      error: "No property/comps data provider is configured, so I can't automatically look up property facts or sold comps for this address. Ask the user to add comps manually in the ARV Calculator, or provide an ARV estimate directly.",
+    };
+  }
+
+  try {
+    const facts = await fetchPropertyFacts(address);
+    const subject: SubjectProperty = {
+      squareFootage: facts?.squareFootage ?? null,
+      bedrooms: facts?.bedrooms ?? null,
+      bathrooms: facts?.bathrooms ?? null,
+      propertyType: facts?.propertyType ?? null,
+      yearBuilt: facts?.yearBuilt ?? null,
+    };
+
+    const { comps: candidates } = await fetchSaleComps(address, subject);
+    const scored = selectComps(candidates, subject);
+    const arv = calculateArvFromComps(
+      scored.map((c) => ({ soldPrice: c.soldPrice, squareFootage: c.squareFootage, similarityScore: c.similarityScore, included: c.included })),
+      subject.squareFootage
+    );
+
+    if (!arv) {
+      return { success: false, error: "No comparable sales were found for that address. Try a nearby address or ask the user for manual comps." };
+    }
+
+    const repairs = 0; // no photos available via this path — Big Stein has no image upload here
+    const mao = calculateMao({ arv: arv.likely, buyerPct, repairs, wholesaleFee });
+    const offerRange = calculateOfferRange(mao);
+
+    const insert: AnalysisInsert = {
+      lead_id: leadId,
+      address,
+      city: facts?.city ?? null,
+      state: facts?.state ?? null,
+      zip: facts?.zip ?? null,
+      parcel_number: facts?.parcelNumber ?? null,
+      property_type: facts?.propertyType ?? null,
+      bedrooms: facts?.bedrooms ?? null,
+      bathrooms: facts?.bathrooms ?? null,
+      square_footage: facts?.squareFootage ?? null,
+      lot_size_sqft: facts?.lotSizeSqft ?? null,
+      year_built: facts?.yearBuilt ?? null,
+      last_sale_date: facts?.lastSaleDate ?? null,
+      last_sale_price: facts?.lastSalePrice ?? null,
+      assessed_value: facts?.assessedValue ?? null,
+      tax_annual_amount: facts?.taxAnnualAmount ?? null,
+      property_data_source: facts ? "rentcast" : null,
+      property_data_source_id: facts?.sourceId ?? null,
+      property_data_retrieved_at: facts?.retrievedAt ?? null,
+      property_data_raw: facts?.raw ?? null,
+      arv_low: arv.low,
+      arv_likely: arv.likely,
+      arv_high: arv.high,
+      arv_confidence: arv.confidence,
+      arv_method: "weighted_price_per_sqft",
+      repairs_ai_estimate: null,
+      repairs_manual_override: null,
+      repairs_final: repairs,
+      repair_confidence: "low",
+      repair_breakdown: null,
+      repair_photo_source: "No photos available via Big Stein chat — manual repair estimate recommended.",
+      repair_photos_analyzed_count: 0,
+      buyer_pct: buyerPct,
+      wholesale_fee: wholesaleFee,
+      mao,
+      offer_range_low: offerRange.low,
+      offer_range_high: offerRange.high,
+      notes: null,
+    };
+
+    const compRows: CompRow[] = scored.map((c) => ({
+      address: c.address,
+      sold_price: c.soldPrice,
+      sold_date: c.soldDate,
+      distance_miles: c.distanceMiles,
+      square_footage: c.squareFootage,
+      bedrooms: c.bedrooms,
+      bathrooms: c.bathrooms,
+      property_type: c.propertyType,
+      year_built: c.yearBuilt,
+      lot_size_sqft: c.lotSizeSqft,
+      price_per_sqft: c.soldPrice && c.squareFootage ? Math.round((c.soldPrice / c.squareFootage) * 100) / 100 : null,
+      similarity_score: c.similarityScore,
+      included: c.included,
+      is_manual: false,
+      source: c.source,
+      source_id: c.sourceId,
+      source_url: c.sourceUrl,
+      retrieved_at: c.retrievedAt,
+      notes: null,
+    }));
+
+    const result = await saveAnalysis(supabase, userId, insert, compRows);
+    if ("error" in result) return { success: false, error: result.error };
+
+    return {
+      success: true,
+      data: {
+        analysis_id: result.id,
+        address,
+        arv_low: arv.low,
+        arv_likely: arv.likely,
+        arv_high: arv.high,
+        arv_confidence: arv.confidence,
+        comps_used: arv.compsUsed,
+        repairs,
+        repair_note: "No photos were available to analyze — repairs default to $0 until a manual estimate is set (via recalculate_mao or the ARV Calculator).",
+        buyer_pct: buyerPct,
+        wholesale_fee: wholesaleFee,
+        mao,
+        offer_range_low: offerRange.low,
+        offer_range_high: offerRange.high,
+        linked_lead_id: leadId,
+      },
+    };
+  } catch (err) {
+    if (err instanceof PropertyDataNotConfiguredError) {
+      return { success: false, error: "No property/comps data provider is configured." };
+    }
+    throw err;
+  }
+}
+
+async function getArvAnalysisTool(userId: string, supabase: AnySupabaseClient, input: Record<string, unknown>): Promise<Result> {
+  const analysisId = input.analysis_id as string | undefined;
+  const leadId = input.lead_id as string | undefined;
+
+  let id = analysisId;
+  if (!id && leadId) {
+    const { data } = await supabase
+      .from("arv_analyses")
+      .select("id")
+      .eq("lead_id", leadId)
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single();
+    id = data?.id;
+  }
+  if (!id) return { success: false, error: "No analysis_id given and no analysis found for that lead_id." };
+
+  const result = await getAnalysis(supabase, userId, id);
+  if (!result) return { success: false, error: "Analysis not found." };
+  return { success: true, data: result };
+}
+
+async function recalculateMaoTool(userId: string, supabase: AnySupabaseClient, input: Record<string, unknown>): Promise<Result> {
+  const analysisId = input.analysis_id as string;
+  if (!analysisId) return { success: false, error: "analysis_id is required." };
+
+  const { data: analysis, error } = await supabase
+    .from("arv_analyses")
+    .select("*")
+    .eq("id", analysisId)
+    .eq("user_id", userId)
+    .single();
+  if (error || !analysis) return { success: false, error: "Analysis not found." };
+
+  const buyerPct = (input.buyer_pct as number) ?? analysis.buyer_pct;
+  const wholesaleFee = (input.wholesale_fee as number) ?? analysis.wholesale_fee;
+  const repairsOverride = input.repairs_override != null ? (input.repairs_override as number) : analysis.repairs_manual_override;
+  const repairs = resolveActiveRepairs(analysis.repairs_ai_estimate, repairsOverride);
+
+  const mao = calculateMao({ arv: analysis.arv_likely, buyerPct, repairs, wholesaleFee });
+  const offerRange = calculateOfferRange(mao);
+
+  const { error: updateError } = await supabase
+    .from("arv_analyses")
+    .update({
+      buyer_pct: buyerPct,
+      wholesale_fee: wholesaleFee,
+      repairs_manual_override: repairsOverride,
+      repairs_final: repairs,
+      mao,
+      offer_range_low: offerRange.low,
+      offer_range_high: offerRange.high,
+    })
+    .eq("id", analysisId)
+    .eq("user_id", userId);
+  if (updateError) return { success: false, error: updateError.message };
+
+  if (analysis.lead_id) {
+    await supabase.from("leads").update({ estimated_repair_costs: repairs, mao, offer_amount: offerRange.high }).eq("id", analysis.lead_id).eq("user_id", userId);
+  }
+
+  return {
+    success: true,
+    data: { analysis_id: analysisId, arv_likely: analysis.arv_likely, buyer_pct: buyerPct, wholesale_fee: wholesaleFee, repairs, mao, offer_range_low: offerRange.low, offer_range_high: offerRange.high },
+  };
+}
+
+async function saveArvAnalysisToLead(userId: string, supabase: AnySupabaseClient, input: Record<string, unknown>): Promise<Result> {
+  const analysisId = input.analysis_id as string;
+  const leadId = input.lead_id as string;
+  if (!analysisId || !leadId) return { success: false, error: "analysis_id and lead_id are required." };
+
+  const { data: lead } = await supabase.from("leads").select("id").eq("id", leadId).eq("user_id", userId).single();
+  if (!lead) return { success: false, error: "Lead not found." };
+
+  const { data: analysis, error } = await supabase
+    .from("arv_analyses")
+    .update({ lead_id: leadId })
+    .eq("id", analysisId)
+    .eq("user_id", userId)
+    .select("arv_likely, repairs_final, mao, offer_range_high")
+    .single();
+  if (error || !analysis) return { success: false, error: error?.message ?? "Analysis not found." };
+
+  await supabase
+    .from("leads")
+    .update({ arv: analysis.arv_likely, estimated_repair_costs: analysis.repairs_final, mao: analysis.mao, offer_amount: analysis.offer_range_high })
+    .eq("id", leadId)
+    .eq("user_id", userId);
+
+  return { success: true, data: { analysis_id: analysisId, lead_id: leadId } };
 }

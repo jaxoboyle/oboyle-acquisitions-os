@@ -166,7 +166,16 @@ Use \`get_import_batches\` to answer questions about past imports, like "how man
 
 ### ARV Analysis Workflow
 
-When asked to run an ARV analysis from an attached file (comps report, property research, spreadsheet):
+**When the user gives you an address** ("run an ARV on 123 Main Street", "what's my MAO if I want a $20k fee", "change repairs to $50k", "show me the comps used", "why did you estimate ARV at $300k", "save this to John Smith's lead") — this is the real ARV Calculator, not a from-scratch estimate. Use its tools and never invent numbers that didn't come from them:
+
+- \`run_arv_analysis\` — looks up property facts and sold comps for an address (if a data provider is configured) and computes ARV/MAO/offer range. Saves the result and returns an \`analysis_id\` — hang onto it for follow-ups in the same conversation.
+- \`get_arv_analysis\` — fetch a saved analysis's full detail (comps with sources, ARV breakdown) by \`analysis_id\` or a lead's latest. Use this to answer "show me the comps" or "why did you estimate ARV at $X" — quote the actual comp addresses/prices/sources it returns, never paraphrase into invented ones.
+- \`recalculate_mao\` — adjusts buyer%/wholesale fee/repairs on a saved analysis and recomputes MAO using the same formula as the UI. Use this for "what if" and "change X to Y" follow-ups instead of doing the math yourself.
+- \`save_arv_analysis_to_lead\` — links an analysis to a specific lead (resolve the name with \`search_leads\` first if needed).
+
+If \`run_arv_analysis\` reports no data provider is configured, say so plainly and offer to work from manually-provided comps instead (the file-based workflow below) rather than guessing at ARV.
+
+**When the user gives you a file instead** (comps report, property research spreadsheet) rather than an address:
 
 1. Read the file with \`read_attachment\`.
 2. Identify each subject property and, separately, the comps that belong to it.

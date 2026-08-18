@@ -154,6 +154,7 @@ export type Database = {
           sheet_names: Json;
           warnings: Json;
           linked_import_batch_id: string | null;
+          arv_analysis_id: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -161,6 +162,87 @@ export type Database = {
           id?: string;
         };
         Update: Partial<Database["public"]["Tables"]["file_attachments"]["Row"]>;
+      };
+      arv_analyses: {
+        Row: {
+          id: string;
+          user_id: string;
+          lead_id: string | null;
+          address: string;
+          city: string | null;
+          state: string | null;
+          zip: string | null;
+          parcel_number: string | null;
+          property_type: string | null;
+          bedrooms: number | null;
+          bathrooms: number | null;
+          square_footage: number | null;
+          lot_size_sqft: number | null;
+          year_built: number | null;
+          last_sale_date: string | null;
+          last_sale_price: number | null;
+          assessed_value: number | null;
+          tax_annual_amount: number | null;
+          property_data_source: string | null;
+          property_data_source_id: string | null;
+          property_data_retrieved_at: string | null;
+          property_data_raw: Json;
+          arv_low: number | null;
+          arv_likely: number | null;
+          arv_high: number | null;
+          arv_confidence: "high" | "medium" | "low" | null;
+          arv_method: string | null;
+          repairs_ai_estimate: number | null;
+          repairs_manual_override: number | null;
+          repairs_final: number | null;
+          repair_confidence: "high" | "medium" | "low" | null;
+          repair_breakdown: Json;
+          repair_photo_source: string | null;
+          repair_photos_analyzed_count: number;
+          buyer_pct: number;
+          wholesale_fee: number;
+          mao: number | null;
+          offer_range_low: number | null;
+          offer_range_high: number | null;
+          notes: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Omit<Database["public"]["Tables"]["arv_analyses"]["Row"], "id" | "created_at" | "updated_at"> & {
+          id?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["arv_analyses"]["Row"]>;
+      };
+      arv_comps: {
+        Row: {
+          id: string;
+          user_id: string;
+          analysis_id: string;
+          address: string;
+          sold_price: number | null;
+          sold_date: string | null;
+          distance_miles: number | null;
+          square_footage: number | null;
+          bedrooms: number | null;
+          bathrooms: number | null;
+          property_type: string | null;
+          year_built: number | null;
+          lot_size_sqft: number | null;
+          price_per_sqft: number | null;
+          similarity_score: number | null;
+          included: boolean;
+          is_manual: boolean;
+          source: string | null;
+          source_id: string | null;
+          source_url: string | null;
+          retrieved_at: string | null;
+          notes: string | null;
+          created_at: string;
+        };
+        Insert: Omit<Database["public"]["Tables"]["arv_comps"]["Row"], "id" | "created_at"> & {
+          id?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["arv_comps"]["Row"]>;
       };
       buyers: {
         Row: {

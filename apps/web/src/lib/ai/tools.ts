@@ -410,6 +410,64 @@ export const BIG_STEIN_TOOLS: Anthropic.Tool[] = [
     },
   },
 
+  // ── ARV / Cash Offer Calculator ─────────────────────────────────────────
+  {
+    name: "run_arv_analysis",
+    description:
+      "Run a full ARV/cash-offer analysis for a property address: looks up property facts and sold comps (if a property-data provider is configured), derives ARV low/likely/high with a confidence rating, and computes MAO and a suggested starting offer using the given (or default 75%/$15,000) buyer percentage and wholesale fee. Saves the result so it can be referenced later in this conversation or reopened in the ARV Calculator UI. If lead_id is given, links it to that lead immediately; otherwise it's unlinked until save_arv_analysis_to_lead is called. Use this for requests like 'run an ARV on 123 Main Street' or 'what's the MAO on this property'.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        address: { type: "string", description: "Property address to analyze." },
+        lead_id: { type: "string", description: "Optional — UUID of the lead this analysis is for." },
+        buyer_pct: { type: "number", description: "Buyer percentage, default 75." },
+        wholesale_fee: { type: "number", description: "Wholesale fee in dollars, default 15000." },
+      },
+      required: ["address"],
+    },
+  },
+  {
+    name: "get_arv_analysis",
+    description:
+      "Get a previously saved ARV analysis — its property facts, ARV low/likely/high with confidence, comps used (with sources), repair estimate, buyer%/fee inputs, MAO, and suggested offer range. Use analysis_id if known, or lead_id to get that lead's most recent analysis. Use this to answer 'show me the comps used', 'why did you estimate ARV at $X', or to check current numbers before recalculating.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        analysis_id: { type: "string" },
+        lead_id: { type: "string" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "recalculate_mao",
+    description:
+      "Adjust one or more inputs on a saved ARV analysis (buyer percentage, wholesale fee, and/or a manual repair override) and recompute MAO and the suggested offer range using the exact same formula as the ARV Calculator UI — never estimate this yourself. Persists the change to that analysis. Use for 'what's my MAO if I want a $20k fee', 'change repairs to $50k', 'use 70% instead'.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        analysis_id: { type: "string", description: "UUID from a prior run_arv_analysis or get_arv_analysis call." },
+        buyer_pct: { type: "number" },
+        wholesale_fee: { type: "number" },
+        repairs_override: { type: "number", description: "Manual repair override in dollars. Pass null-like omission to leave unchanged." },
+      },
+      required: ["analysis_id"],
+    },
+  },
+  {
+    name: "save_arv_analysis_to_lead",
+    description:
+      "Link a previously run ARV analysis to a specific lead (use search_leads first if you only have a name/address) and update that lead's ARV/repairs/MAO snapshot fields. Use for 'save this to John Smith's lead'.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        analysis_id: { type: "string" },
+        lead_id: { type: "string" },
+      },
+      required: ["analysis_id", "lead_id"],
+    },
+  },
+
   {
     name: "list_followups",
     description:
