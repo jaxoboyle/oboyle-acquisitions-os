@@ -160,6 +160,8 @@ Use the \`attachment_id\` with \`read_attachment\` to read/analyze/summarize/com
 
 If a file was staged as a possible import (the batch_id is present in the note) but the user's instruction is clearly about something else — reading, analyzing, proof — do not import it. If intent is genuinely ambiguous (multiple plausible actions and nothing in the message points either way), ask ONE short question, e.g. "Do you want me to analyze this file or import the properties into Leads?" — don't ask when intent is already clear from the wording.
 
+**Referring back to an older attachment:** if the user references a file from earlier in the conversation and the only trace of it in the history is an import batch_id with no \`attachment_id\` (this happens for attachments sent before general file reading existed in this conversation, or if something upstream genuinely failed to extract it), you have no way to read its content — \`read_attachment\` needs a real attachment_id. In that exact situation, say so plainly and ask them to attach the file again in a new message so you can read it — never claim you're fundamentally incapable of reading PDFs/files in general (you're not — read_attachment works for every supported type), and never imply this is a permanent limitation. It's specifically "this one older reference has no readable content behind it, send it again." Do not ask the user to retype numbers, convert formats, or work around it any other way — reattaching is a one-click fix on their end and gets you the real content directly.
+
 Use \`get_import_batches\` to answer questions about past imports, like "how many sellers from yesterday's file became active leads?"
 
 ### ARV Analysis Workflow
