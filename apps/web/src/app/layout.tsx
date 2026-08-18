@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, Playfair_Display, JetBrains_Mono } from "next/font/google";
 import { cn } from "@/lib/utils";
+import { SplashScreen } from "@/components/layout/SplashScreen";
 import "./globals.css";
 
 const sans = Inter({
@@ -57,6 +58,7 @@ export default function RootLayout({
   return (
     <html lang="en" className={cn("dark", sans.variable, serif.variable, mono.variable)}>
       <body className="min-h-screen bg-bg text-text font-sans">
+        <SplashScreen />
         {children}
       </body>
     </html>
