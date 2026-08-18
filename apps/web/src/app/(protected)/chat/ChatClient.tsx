@@ -7,17 +7,40 @@ import { formatRelative } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 import { useWorkSession } from "@/lib/store/work-session";
 
-type ImportSample = { seller_name: string | null; address: string | null; phone: string | null; parcel_number: string | null };
+type ImportSample = { primary: string | null; secondary: string | null; phone: string | null; extra: string | null };
 
-type AttachedBatch = {
+type PossibleImport = {
   batch_id: string;
-  filename: string;
+  target_kind: "leads" | "buyers";
   total_rows: number;
   valid_rows: number;
   sample: ImportSample[];
 };
 
-const ACCEPTED_IMPORT_TYPES = ".csv,.xlsx,.xls,.pdf,.txt";
+type AttachedFile = {
+  attachment_id: string;
+  filename: string;
+  file_kind: string;
+  extraction_status: string;
+  warnings: string[];
+  possible_import: PossibleImport | null;
+  importDeclined: boolean;
+};
+
+const ACCEPTED_ATTACH_TYPES = ".csv,.xlsx,.xls,.pdf,.txt,.docx,.json,.png,.jpg,.jpeg,.webp,.pptx,.rtf";
+
+function fileNoteFor(f: AttachedFile): string {
+  const parts = [`[Attached file: ${f.filename} — attachment_id ${f.attachment_id}, kind: ${f.file_kind}.`];
+  if (f.extraction_status === "failed" || f.extraction_status === "unsupported") {
+    parts.push(`Note: this file could not be read (${f.warnings[0] ?? "unsupported/unreadable"}).`);
+  }
+  if (f.possible_import && !f.importDeclined) {
+    parts.push(
+      `Also looks like it may contain a structured ${f.possible_import.target_kind === "buyers" ? "buyer" : "seller"} list — import batch_id ${f.possible_import.batch_id}, ${f.possible_import.valid_rows}/${f.possible_import.total_rows} rows look complete enough to import. Only import if the user's instruction actually asks for that.`
+    );
+  }
+  return `${parts.join(" ")}]`;
+}
 
 type Conversation = {
   id: string;
@@ -67,11 +90,11 @@ export function ChatClient({
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [toolActive, setToolActive] = useState<string | null>(null);
-  const [attachedBatch, setAttachedBatch] = useState<AttachedBatch | null>(null);
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
-  const [committingImport, setCommittingImport] = useState(false);
+  const [committingImport, setCommittingImport] = useState<string | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -121,7 +144,7 @@ export function ChatClient({
       formData.append("file", file);
       formData.append("conversationId", convId);
 
-      const res = await fetch("/api/chat/upload", { method: "POST", body: formData });
+      const res = await fetch("/api/files/upload", { method: "POST", body: formData });
       const body = await res.json();
 
       if (!res.ok) {
@@ -129,13 +152,18 @@ export function ChatClient({
         return;
       }
 
-      setAttachedBatch({
-        batch_id: body.batch_id,
-        filename: body.filename,
-        total_rows: body.total_rows,
-        valid_rows: body.valid_rows,
-        sample: body.sample ?? [],
-      });
+      setAttachedFiles((prev) => [
+        ...prev,
+        {
+          attachment_id: body.attachment_id,
+          filename: body.filename,
+          file_kind: body.file_kind,
+          extraction_status: body.extraction?.status ?? "pending",
+          warnings: body.extraction?.warnings ?? [],
+          possible_import: body.possible_import ?? null,
+          importDeclined: false,
+        },
+      ]);
       inputRef.current?.focus();
     } catch {
       setUploadError("Upload failed. Check your connection and try again.");
@@ -144,9 +172,18 @@ export function ChatClient({
     }
   }
 
+  async function uploadFiles(files: File[]) {
+    for (const file of files) {
+      // Sequential, not parallel — keeps upload cards appearing in the order
+      // the user picked them, and avoids hammering the route with a burst of
+      // concurrent AI/OCR calls for a multi-file drop.
+      await uploadFile(file);
+    }
+  }
+
   function handleFileInputChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (file) uploadFile(file);
+    const files = Array.from(e.target.files ?? []);
+    if (files.length) uploadFiles(files);
     e.target.value = "";
   }
 
@@ -168,28 +205,30 @@ export function ChatClient({
 
   // Confirms the preview shown after upload — a direct, deterministic
   // commit (not routed through Big Stein/the LLM) so clicking "Import
-  // Leads" is instant and doesn't depend on the model inferring intent.
-  // The natural-language path ("Add these sellers to my leads") still
-  // works separately via the import_leads_from_file tool.
-  async function confirmImport() {
-    if (!attachedBatch || committingImport) return;
-    const batch = attachedBatch;
-    setCommittingImport(true);
+  // Leads"/"Import Buyers" is instant and doesn't depend on the model
+  // inferring intent. The natural-language path ("Add these sellers to my
+  // leads") still works separately via the import_leads_from_file /
+  // import_buyers_from_file tools.
+  async function confirmImport(file: AttachedFile) {
+    if (!file.possible_import || committingImport) return;
+    const { batch_id, target_kind } = file.possible_import;
+    setCommittingImport(file.attachment_id);
     try {
-      const res = await fetch(`/api/imports/${batch.batch_id}`, { method: "POST" });
+      const res = await fetch(`/api/imports/${batch_id}`, { method: "POST" });
       const summary = await res.json();
-      setAttachedBatch(null);
+      setAttachedFiles((prev) => prev.map((f) => (f.attachment_id === file.attachment_id ? { ...f, importDeclined: true } : f)));
 
       let convId = activeConvId;
       if (!convId) convId = await createConversation();
 
+      const noun = target_kind === "buyers" ? "buyer" : "lead";
       if (!res.ok) {
-        await addSystemMessage(convId, `Couldn't import ${batch.filename}: ${summary.error ?? "unknown error"}`);
+        await addSystemMessage(convId, `Couldn't import ${file.filename}: ${summary.error ?? "unknown error"}`);
         return;
       }
 
       const lines = [
-        `**${summary.imported_count} new lead${summary.imported_count === 1 ? "" : "s"} added**`,
+        `**${summary.imported_count} new ${noun}${summary.imported_count === 1 ? "" : "s"} added**`,
         `**${summary.duplicate_count} duplicate${summary.duplicate_count === 1 ? "" : "s"} skipped**`,
       ];
       if (summary.skipped_count > 0) {
@@ -199,14 +238,17 @@ export function ChatClient({
     } catch {
       setUploadError("Import failed. Check your connection and try again.");
     } finally {
-      setCommittingImport(false);
+      setCommittingImport(null);
     }
   }
 
-  async function cancelImport() {
-    if (!attachedBatch) return;
-    const batchId = attachedBatch.batch_id;
-    setAttachedBatch(null);
+  // Declines the offered import without discarding the attachment — the
+  // file stays available for reading/analysis/proof, only the staged
+  // Leads/Buyers batch is torn down.
+  async function declineImport(file: AttachedFile) {
+    if (!file.possible_import) return;
+    const batchId = file.possible_import.batch_id;
+    setAttachedFiles((prev) => prev.map((f) => (f.attachment_id === file.attachment_id ? { ...f, importDeclined: true } : f)));
     try {
       await fetch(`/api/imports/${batchId}`, { method: "DELETE" });
     } catch {
@@ -214,21 +256,27 @@ export function ChatClient({
     }
   }
 
+  function removeAttachedFile(attachmentId: string) {
+    setAttachedFiles((prev) => prev.filter((f) => f.attachment_id !== attachmentId));
+  }
+
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
     setDragActive(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) uploadFile(file);
+    const files = Array.from(e.dataTransfer.files ?? []);
+    if (files.length) uploadFiles(files);
   }
 
   async function send(rawText: string) {
-    if ((!rawText.trim() && !attachedBatch) || streaming) return;
+    if ((!rawText.trim() && attachedFiles.length === 0) || streaming) return;
     setError(null);
 
-    const pendingBatch = attachedBatch;
-    const text = pendingBatch
-      ? `${rawText.trim() || "Add these sellers to my leads."}\n\n[Attached file: ${pendingBatch.filename} — import batch_id ${pendingBatch.batch_id}, ${pendingBatch.total_rows} rows parsed, ~${pendingBatch.valid_rows} look complete enough to import.]`
-      : rawText;
+    const pendingFiles = attachedFiles;
+    const fileNotes = pendingFiles.map(fileNoteFor).join("\n");
+    // No synthetic "add these to my leads" default — an attachment with no
+    // instruction is not an import instruction. Big Stein's system prompt
+    // handles the empty-instruction case (read it / ask what to do).
+    const text = [rawText.trim(), fileNotes].filter(Boolean).join("\n\n");
 
     let convId = activeConvId;
     if (!convId) {
@@ -242,7 +290,7 @@ export function ChatClient({
       content: text,
       created_at: new Date().toISOString(),
     };
-    setAttachedBatch(null);
+    setAttachedFiles([]);
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setStreamingText("");
@@ -478,56 +526,83 @@ export function ChatClient({
               </div>
             )}
 
-            {attachedBatch && (
-              <div className="card p-3 mb-2 text-xs">
-                <div className="flex items-center gap-2 text-text">
-                  <FileText size={13} className="shrink-0 text-brand" />
-                  <span className="font-medium truncate">{attachedBatch.filename}</span>
-                  <button
-                    onClick={cancelImport}
-                    className="ml-auto text-text-subtle hover:text-danger shrink-0"
-                    aria-label="Cancel import"
-                    disabled={committingImport}
-                  >
-                    <X size={13} />
-                  </button>
-                </div>
+            {attachedFiles.length > 0 && (
+              <div className="space-y-2 mb-2">
+                {attachedFiles.map((file) => (
+                  <div key={file.attachment_id} className="card p-3 text-xs">
+                    <div className="flex items-center gap-2 text-text">
+                      <FileText size={13} className="shrink-0 text-brand" />
+                      <span className="font-medium truncate">{file.filename}</span>
+                      {file.extraction_status === "pending" && <span className="text-text-subtle">reading…</span>}
+                      {file.extraction_status === "needs_vision" && <span className="text-text-subtle">attached — reads on first question</span>}
+                      {(file.extraction_status === "failed" || file.extraction_status === "unsupported") && (
+                        <span className="text-danger">{file.warnings[0] ?? "couldn't be read"}</span>
+                      )}
+                      <button
+                        onClick={() => removeAttachedFile(file.attachment_id)}
+                        className="ml-auto text-text-subtle hover:text-danger shrink-0"
+                        aria-label={`Remove ${file.filename}`}
+                        disabled={committingImport === file.attachment_id}
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
 
-                <p className="mt-1.5 text-text-muted">
-                  Found <span className="font-medium text-text">{attachedBatch.valid_rows} seller record{attachedBatch.valid_rows === 1 ? "" : "s"}</span>
-                  {attachedBatch.total_rows > attachedBatch.valid_rows &&
-                    ` (${attachedBatch.total_rows - attachedBatch.valid_rows} row${attachedBatch.total_rows - attachedBatch.valid_rows === 1 ? "" : "s"} look incomplete and may be skipped)`}
-                </p>
+                    {file.possible_import && !file.importDeclined && (
+                      <>
+                        <p className="mt-1.5 text-text-muted">
+                          Also looks like it may contain a structured {file.possible_import.target_kind === "buyers" ? "buyer" : "seller"} list — found{" "}
+                          <span className="font-medium text-text">
+                            {file.possible_import.valid_rows} record{file.possible_import.valid_rows === 1 ? "" : "s"}
+                          </span>
+                          {file.possible_import.total_rows > file.possible_import.valid_rows &&
+                            ` (${file.possible_import.total_rows - file.possible_import.valid_rows} row${file.possible_import.total_rows - file.possible_import.valid_rows === 1 ? "" : "s"} look incomplete and may be skipped)`}
+                        </p>
 
-                {attachedBatch.sample.length > 0 && (
-                  <ul className="mt-2 space-y-1 border-t border-surface-border pt-2">
-                    {attachedBatch.sample.map((r, i) => (
-                      <li key={i} className="flex items-center gap-1.5 text-text-muted">
-                        <Users size={11} className="shrink-0 text-text-subtle" />
-                        <span className="text-text truncate">{r.seller_name ?? "—"}</span>
-                        {r.address && <span className="truncate">— {r.address}</span>}
-                        {r.phone && <span className="shrink-0 text-text-subtle">{r.phone}</span>}
-                        {r.parcel_number && <span className="shrink-0 text-text-subtle">APN {r.parcel_number}</span>}
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                        {file.possible_import.sample.length > 0 && (
+                          <ul className="mt-2 space-y-1 border-t border-surface-border pt-2">
+                            {file.possible_import.sample.map((r, i) => (
+                              <li key={i} className="flex items-center gap-1.5 text-text-muted">
+                                <Users size={11} className="shrink-0 text-text-subtle" />
+                                <span className="text-text truncate">{r.primary ?? "—"}</span>
+                                {r.secondary && <span className="truncate">— {r.secondary}</span>}
+                                {r.phone && <span className="shrink-0 text-text-subtle">{r.phone}</span>}
+                                {r.extra && <span className="shrink-0 text-text-subtle">{r.extra}</span>}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
 
-                <div className="flex items-center justify-end gap-2 mt-2.5 pt-2 border-t border-surface-border">
-                  <button onClick={cancelImport} className="btn-secondary text-xs px-3 py-1.5" disabled={committingImport}>
-                    Cancel
-                  </button>
-                  <button onClick={confirmImport} className="btn-primary text-xs px-3 py-1.5 flex items-center gap-1.5" disabled={committingImport}>
-                    {committingImport && <Loader2 size={12} className="animate-spin" />}
-                    Import Leads
-                  </button>
-                </div>
+                        <p className="mt-2 text-text-subtle">
+                          This is optional — only import if that&apos;s what you want done with this file.
+                        </p>
+                        <div className="flex items-center justify-end gap-2 mt-1.5 pt-2 border-t border-surface-border">
+                          <button
+                            onClick={() => declineImport(file)}
+                            className="btn-secondary text-xs px-3 py-1.5"
+                            disabled={committingImport === file.attachment_id}
+                          >
+                            Not now
+                          </button>
+                          <button
+                            onClick={() => confirmImport(file)}
+                            className="btn-primary text-xs px-3 py-1.5 flex items-center gap-1.5"
+                            disabled={committingImport === file.attachment_id}
+                          >
+                            {committingImport === file.attachment_id && <Loader2 size={12} className="animate-spin" />}
+                            Import {file.possible_import.target_kind === "buyers" ? "Buyers" : "Leads"}
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
 
             {dragActive && (
               <div className="text-center text-xs text-brand border-2 border-dashed border-brand/40 rounded py-3 mb-2">
-                Drop a CSV, XLSX, PDF, or TXT lead list to attach
+                Drop a file to attach — PDF, CSV, XLSX, DOCX, TXT, JSON, or an image
               </div>
             )}
 
@@ -535,7 +610,8 @@ export function ChatClient({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept={ACCEPTED_IMPORT_TYPES}
+                accept={ACCEPTED_ATTACH_TYPES}
+                multiple
                 className="hidden"
                 onChange={handleFileInputChange}
               />
@@ -543,8 +619,8 @@ export function ChatClient({
                 onClick={() => fileInputRef.current?.click()}
                 disabled={streaming || uploading}
                 className="btn-secondary shrink-0 p-2.5"
-                aria-label="Attach a seller file"
-                title="Attach a seller list (CSV, XLSX, PDF, TXT)"
+                aria-label="Attach a file"
+                title="Attach a file — PDF, CSV, XLSX, DOCX, TXT, JSON, or an image"
               >
                 {uploading ? <Loader2 size={15} className="animate-spin" /> : <Paperclip size={15} />}
               </button>
@@ -553,7 +629,7 @@ export function ChatClient({
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={attachedBatch ? "Add a note, or send to import…" : "Message Big Stein…"}
+                placeholder={attachedFiles.length > 0 ? "Tell Big Stein what to do with this file…" : "Message Big Stein…"}
                 rows={1}
                 className="input resize-none max-h-32 overflow-y-auto"
                 style={{ height: "auto" }}
@@ -566,7 +642,7 @@ export function ChatClient({
               />
               <button
                 onClick={() => send(input)}
-                disabled={(!input.trim() && !attachedBatch) || streaming}
+                disabled={(!input.trim() && attachedFiles.length === 0) || streaming}
                 className="btn-primary shrink-0 p-2.5"
               >
                 {streaming ? (
@@ -578,7 +654,7 @@ export function ChatClient({
             </div>
           </div>
           <p className="text-[10px] text-text-subtle text-center mt-1.5">
-            Big Stein organizes information — not legal or financial advice. Attach a CSV, XLSX, PDF, or TXT lead list to import sellers.
+            Big Stein organizes information — not legal or financial advice. Attach a file, then tell Big Stein what to do with it — read it, analyze it, import it, or use it as task proof.
           </p>
         </div>
       </div>

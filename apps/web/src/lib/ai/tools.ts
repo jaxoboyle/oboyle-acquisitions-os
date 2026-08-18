@@ -342,6 +342,74 @@ export const BIG_STEIN_TOOLS: Anthropic.Tool[] = [
       required: ["lead_id", "disposition"],
     },
   },
+  // ── Buyer-file import ────────────────────────────────────────────────────
+  {
+    name: "import_buyers_from_file",
+    description:
+      "Commit a previously attached and parsed buyer-list file into the Buyers database. Call this when the user says things like 'add these buyers to my list' or 'import these investors' after attaching a CSV/XLSX/PDF/TXT file — the batch_id is given to you in the attached-file note in the conversation. Automatically skips rows missing required info and skips duplicates matched by name+phone, name+email, phone, or email. Does not require confirmation — report the resulting counts (imported/duplicates/skipped) back to the user afterward exactly as returned.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        batch_id: { type: "string", description: "The import batch UUID from the attached-file note." },
+      },
+      required: ["batch_id"],
+    },
+  },
+
+  // ── General file intelligence ───────────────────────────────────────────
+  {
+    name: "read_attachment",
+    description:
+      "Read the content of a previously attached file (PDF, DOCX, CSV, XLSX, TXT, JSON, image/screenshot, PPTX, or RTF) by its attachment_id, given to you in the attached-file note in the conversation. Use this for ANY attachment intent that isn't a Leads/Buyers import — reading, summarizing, analyzing, running an ARV analysis, comparing files, answering a question about a document, or checking whether a file satisfies a task. For a very large document, pass `query` (the specific thing you're looking for, e.g. an address or topic) to get back the most relevant sections instead of the whole thing — omit it for a normal-sized document or when you need the full content. This never imports or changes any CRM data by itself.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        attachment_id: { type: "string", description: "UUID from the attached-file note." },
+        query: { type: "string", description: "Optional — narrows a large document to its most relevant sections." },
+      },
+      required: ["attachment_id"],
+    },
+  },
+  {
+    name: "list_attachments",
+    description:
+      "List files attached earlier in this conversation, with their attachment_id, filename, and type. Use this if the user refers back to a file ('the file I sent earlier', 'that spreadsheet') and you don't already have its attachment_id from the conversation history.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        limit: { type: "number", description: "Max results, default 10" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "search_tasks",
+    description:
+      "Search the user's tasks by title/notes keyword, useful for finding the right task before attaching a file to it as proof (e.g. user says 'this is proof for my ARV task').",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        query: { type: "string", description: "Search term matched against title and notes." },
+        limit: { type: "number", description: "Max results, default 10" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "attach_file_to_task",
+    description:
+      "Attach a previously uploaded file to a task as completion proof and evaluate it against that task's actual proof requirement — exactly the same standard as the Complete Task screen, never a rubber stamp. Call this when the user says things like 'this is my proof for the ARV task', 'use this file to complete my task', 'does this satisfy today's task?', or 'attach this as proof'. If the proof is genuinely sufficient, the task is marked completed automatically (report this to the user). If not, nothing is marked complete — explain exactly what's missing from the tool's response so the user knows what to submit next. Never call this for a file the user is asking you to read/analyze/import instead — only when they're offering it as proof of completed work.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        attachment_id: { type: "string", description: "UUID from the attached-file note." },
+        task_id: { type: "string", description: "UUID of the task this is proof for (use search_tasks or get_today_tasks first if you only have a description)." },
+        note: { type: "string", description: "Optional short written context from the user about what the file shows." },
+      },
+      required: ["attachment_id", "task_id"],
+    },
+  },
+
   {
     name: "list_followups",
     description:

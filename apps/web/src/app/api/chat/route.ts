@@ -102,7 +102,8 @@ export async function POST(req: NextRequest) {
                 block.name,
                 block.input as Record<string, unknown>,
                 user.id,
-                supabase
+                supabase,
+                conversationId
               );
 
               // Log the tool call

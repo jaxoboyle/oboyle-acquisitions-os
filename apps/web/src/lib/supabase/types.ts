@@ -119,6 +119,7 @@ export type Database = {
           storage_path: string | null;
           file_size_bytes: number | null;
           status: "staged" | "processing" | "completed" | "failed";
+          target_kind: "leads" | "buyers";
           column_mapping: Json;
           parsed_rows: Json;
           total_rows: number;
@@ -134,6 +135,32 @@ export type Database = {
           id?: string;
         };
         Update: Partial<Database["public"]["Tables"]["import_batches"]["Row"]>;
+      };
+      file_attachments: {
+        Row: {
+          id: string;
+          user_id: string;
+          conversation_id: string | null;
+          filename: string;
+          mime_type: string | null;
+          file_kind: "pdf" | "csv" | "xlsx" | "docx" | "txt" | "json" | "image" | "pptx" | "rtf" | "other";
+          storage_path: string | null;
+          size_bytes: number | null;
+          extraction_status: "pending" | "ready" | "needs_vision" | "failed" | "unsupported";
+          extraction_method: string | null;
+          extracted_text: string | null;
+          extracted_summary: string | null;
+          page_count: number | null;
+          sheet_names: Json;
+          warnings: Json;
+          linked_import_batch_id: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Omit<Database["public"]["Tables"]["file_attachments"]["Row"], "id" | "created_at" | "updated_at"> & {
+          id?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["file_attachments"]["Row"]>;
       };
       buyers: {
         Row: {

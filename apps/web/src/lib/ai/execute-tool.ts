@@ -1,7 +1,14 @@
 import { verifyProof } from "./verify-proof";
+import { determineProofRequirement } from "./proof-requirement";
 import { replenishTaskPipeline } from "@/lib/pipeline/replenish";
 import { runImport } from "@/lib/imports/run-import";
+import { runBuyerImport } from "@/lib/imports/run-buyer-import";
 import { todayISO } from "@/lib/utils";
+import { getOwnedAttachment, ensureAttachmentText, type FileAttachmentRow } from "@/lib/files/repository";
+import { selectRelevantContent } from "@/lib/files/chunk";
+import { copyAttachmentToTaskProof, downloadAttachment } from "@/lib/files/storage";
+import { IMAGE_MEDIA_TYPES } from "@/lib/files/types";
+import type { ImageAttachment } from "./json-call";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnySupabaseClient = import("@supabase/supabase-js").SupabaseClient<any, any, any>;
@@ -17,7 +24,8 @@ export async function executeTool(
   name: string,
   input: Record<string, unknown>,
   userId: string,
-  supabase: AnySupabaseClient
+  supabase: AnySupabaseClient,
+  conversationId?: string | null
 ): Promise<Result> {
   try {
     switch (name) {
@@ -90,8 +98,29 @@ export async function executeTool(
       case "import_leads_from_file":
         return await importLeadsFromFile(userId, supabase, input.batch_id as string);
 
+      case "import_buyers_from_file":
+        return await importBuyersFromFile(userId, supabase, input.batch_id as string);
+
       case "get_import_batches":
         return await getImportBatches(userId, supabase, (input.limit as number) ?? 10);
+
+      case "read_attachment":
+        return await readAttachment(userId, supabase, input.attachment_id as string, input.query as string | undefined);
+
+      case "list_attachments":
+        return await listAttachments(userId, supabase, conversationId ?? null, (input.limit as number) ?? 10);
+
+      case "search_tasks":
+        return await searchTasks(userId, supabase, input.query as string, (input.limit as number) ?? 10);
+
+      case "attach_file_to_task":
+        return await attachFileToTask(
+          userId,
+          supabase,
+          input.attachment_id as string,
+          input.task_id as string,
+          input.note as string | undefined
+        );
 
       case "set_lead_disposition":
         if (input.disposition === "under_contract" && !input.confirmed) {
@@ -691,6 +720,221 @@ async function getImportBatches(userId: string, supabase: AnySupabaseClient, lim
   }));
 
   return { success: true, data };
+}
+
+async function importBuyersFromFile(userId: string, supabase: AnySupabaseClient, batchId: string): Promise<Result> {
+  if (!batchId) return { success: false, error: "batch_id is required." };
+  const result = await runBuyerImport(userId, supabase, batchId);
+  if (!result.success) return { success: false, error: result.error };
+  return { success: true, data: result.summary };
+}
+
+async function readAttachment(
+  userId: string,
+  supabase: AnySupabaseClient,
+  attachmentId: string,
+  query?: string
+): Promise<Result> {
+  if (!attachmentId) return { success: false, error: "attachment_id is required." };
+
+  const { row, error: loadError } = await getOwnedAttachment(supabase, userId, attachmentId);
+  if (loadError || !row) return { success: false, error: loadError ?? "Attachment not found." };
+
+  if (row.extraction_status === "unsupported" || row.extraction_status === "failed") {
+    return {
+      success: false,
+      error: row.warnings?.[0] ?? `This file ("${row.filename}") couldn't be read.`,
+    };
+  }
+
+  const { text, error: textError } = await ensureAttachmentText(supabase, row);
+  if (textError || !text) return { success: false, error: textError ?? "No readable content available for this file." };
+
+  const selection = selectRelevantContent(text, query ?? null);
+
+  return {
+    success: true,
+    data: {
+      attachment_id: row.id,
+      filename: row.filename,
+      file_kind: row.file_kind,
+      page_count: row.page_count,
+      sheet_names: row.sheet_names,
+      warnings: row.warnings,
+      truncated: selection.truncated,
+      truncation_note: selection.note,
+      content: selection.content,
+    },
+  };
+}
+
+async function listAttachments(
+  userId: string,
+  supabase: AnySupabaseClient,
+  conversationId: string | null,
+  limit: number
+): Promise<Result> {
+  let q = supabase
+    .from("file_attachments")
+    .select("id, filename, file_kind, extraction_status, page_count, created_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (conversationId) q = q.eq("conversation_id", conversationId);
+
+  const { data, error } = await q;
+  if (error) return { success: false, error: error.message };
+  return { success: true, data };
+}
+
+async function searchTasks(userId: string, supabase: AnySupabaseClient, query: string, limit: number): Promise<Result> {
+  if (!query) return { success: false, error: "query is required." };
+
+  const { data, error } = await supabase
+    .from("tasks")
+    .select("id, title, status, task_type, due_date, proof_type, proof_status")
+    .eq("user_id", userId)
+    .is("deleted_at", null)
+    .or(`title.ilike.%${query}%,notes.ilike.%${query}%`)
+    .order("due_date", { ascending: false })
+    .limit(limit);
+
+  if (error) return { success: false, error: error.message };
+  return { success: true, data };
+}
+
+const MAX_PROOF_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/** Task-proof counterpart to read_attachment — reuses the same
+ * proof-requirement + verifyProof standard as the Complete Task modal and
+ * the complete_task tool (see completeTask below) rather than inventing a
+ * separate, looser check for chat-submitted proof. Copies the file into the
+ * task-proof bucket so it flows through the existing download/verification
+ * code path unmodified. */
+async function attachFileToTask(
+  userId: string,
+  supabase: AnySupabaseClient,
+  attachmentId: string,
+  taskId: string,
+  note?: string
+): Promise<Result> {
+  if (!attachmentId) return { success: false, error: "attachment_id is required." };
+  if (!taskId) return { success: false, error: "task_id is required." };
+
+  const { row: attachment, error: attachmentError } = await getOwnedAttachment(supabase, userId, attachmentId);
+  if (attachmentError || !attachment) return { success: false, error: attachmentError ?? "Attachment not found." };
+  if (!attachment.storage_path) return { success: false, error: "The original file is no longer available in storage." };
+
+  const { data: task, error: taskError } = await supabase
+    .from("tasks")
+    .select("id, title, notes, task_type, category, lead_id, is_non_negotiable, proof_type, proof_required, completed")
+    .eq("id", taskId)
+    .eq("user_id", userId)
+    .single();
+
+  if (taskError || !task) return { success: false, error: "Task not found." };
+  if (task.completed) return { success: false, error: "That task is already completed." };
+
+  let proofType = task.proof_type as string | null;
+  let proofRequired = task.proof_required as string | null;
+  if (!proofType || !proofRequired) {
+    const requirement = await determineProofRequirement(task);
+    proofType = requirement.proof_type;
+    proofRequired = requirement.proof_required;
+    await supabase.from("tasks").update({ proof_type: proofType, proof_required: proofRequired }).eq("id", taskId).eq("user_id", userId);
+  }
+
+  const { path: proofPath, error: copyError } = await copyAttachmentToTaskProof(
+    supabase,
+    userId,
+    taskId,
+    attachment.storage_path,
+    attachment.filename
+  );
+  if (copyError || !proofPath) return { success: false, error: copyError ?? "Could not attach the file to this task." };
+
+  // Build the actual evidence to verify: a real image for a screenshot/photo
+  // (same vision check the Complete Task modal gets), extracted text for
+  // everything else — never just "a file was present."
+  const images: ImageAttachment[] = [];
+  let submissionText = note ?? "";
+
+  if (attachment.file_kind === "image") {
+    const bytes = await downloadAttachment(supabase, attachment.storage_path);
+    const ext = attachment.filename.toLowerCase().split(".").pop() ?? "";
+    const mediaType = IMAGE_MEDIA_TYPES[ext] as ImageAttachment["mediaType"] | undefined;
+    if (bytes && mediaType && bytes.byteLength <= MAX_PROOF_IMAGE_BYTES) {
+      images.push({ mediaType, base64: bytes.toString("base64") });
+    } else {
+      const { text } = await ensureAttachmentText(supabase, attachment as FileAttachmentRow);
+      if (text) submissionText = [submissionText, text].filter(Boolean).join("\n\n");
+    }
+  } else {
+    const { text } = await ensureAttachmentText(supabase, attachment as FileAttachmentRow);
+    if (text) submissionText = [submissionText, text.slice(0, 6000)].filter(Boolean).join("\n\n");
+  }
+
+  const verdict = await verifyProof(
+    { title: task.title, notes: task.notes, proof_required: proofRequired },
+    { proof_type: proofType ?? "file", text: submissionText || undefined, file_paths: [proofPath] },
+    images
+  );
+
+  const proofSummary = `${note ? `${note}\n\n` : ""}File: ${attachment.filename}`.trim();
+
+  if (!verdict.approved) {
+    await supabase
+      .from("tasks")
+      .update({
+        proof_status: "rejected",
+        proof_submitted: proofSummary,
+        proof_submitted_at: new Date().toISOString(),
+        proof_rejection_reason: verdict.reason,
+        proof_file_paths: [proofPath],
+      })
+      .eq("id", taskId)
+      .eq("user_id", userId);
+
+    return { success: false, error: `Proof not accepted: ${verdict.reason}`, data: { approved: false, reason: verdict.reason, task_id: taskId } };
+  }
+
+  const { data: updatedTask, error: updateError } = await supabase
+    .from("tasks")
+    .update({
+      status: "completed",
+      completed: true,
+      completed_at: new Date().toISOString(),
+      completion_pct: 100,
+      proof_status: "approved",
+      proof_submitted: proofSummary,
+      proof_submitted_at: new Date().toISOString(),
+      proof_rejection_reason: null,
+      proof_file_paths: [proofPath],
+    })
+    .eq("id", taskId)
+    .eq("user_id", userId)
+    .select()
+    .single();
+
+  if (updateError) return { success: false, error: updateError.message };
+
+  if (task.lead_id) {
+    await supabase.from("activity_log").insert({
+      user_id: userId,
+      lead_id: task.lead_id,
+      activity_type: "task_completed",
+      description: `Completed: ${task.title} (proof: ${attachment.filename})`,
+    });
+  }
+
+  let replacementTask: Record<string, unknown> | null = null;
+  if (task.is_non_negotiable) {
+    const replenished = await replenishTaskPipeline(userId, supabase, taskId);
+    replacementTask = replenished?.task ?? null;
+  }
+
+  return { success: true, data: { approved: true, reason: verdict.reason, task: updatedTask, replacementTask } };
 }
 
 const DISPOSITION_LABELS: Record<string, string> = {
